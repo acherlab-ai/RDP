@@ -1,0 +1,137 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Thời gian sử dụng'
+        required: false
+        default: '5h40m'
+        type: choice
+        options:
+        - '1h'
+        - '3h'
+        - '5h40m'
+
+jobs:
+  RDP-Setup:
+    runs-on: windows-latest
+    timeout-minutes: 340
+
+    steps:
+      # CẤU HÌNH HỆ THỐNG
+      - name: Cấu hình hệ thống
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389 profile=any
+          Set-Service -Name TermService -StartupType Automatic
+          Start-Service -Name TermService
+
+      # TẠO USER ADMIN
+      - name: Tạo tài khoản admin
+        run: |
+          $matKhau = "admin@9876543211@@"
+          $securePass = ConvertTo-SecureString $matKhau -AsPlainText -Force
+          
+          Remove-LocalUser -Name "admin" -ErrorAction SilentlyContinue
+          New-LocalUser -Name "admin" -Password $securePass -AccountNeverExpires -Description "RDP Account"
+          Set-LocalUser -Name "admin" -PasswordNeverExpires $true -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "admin" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "admin" -ErrorAction SilentlyContinue
+          Enable-LocalUser -Name "admin"
+          
+          echo "RDP_USER=admin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$matKhau" >> $env:GITHUB_ENV
+
+      # CÀI NGROK & TẠO TUNNEL
+      - name: Thiết lập tunnel ngrok
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          # Tải & giải nén ngrok
+          $zip = "$env:TEMP\ngrok.zip"
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:TEMP\ngrok" -Force
+          Remove-Item $zip -Force
+          
+          # Thêm vào PATH
+          $env:PATH += ";$env:TEMP\ngrok"
+          
+          # Cấu hình authtoken
+          & "$env:TEMP\ngrok\ngrok.exe" config add-authtoken $env:NGROK_AUTHTOKEN
+          
+          # Khởi động tunnel TCP 3389 ở background
+          Start-Process -FilePath "$env:TEMP\ngrok\ngrok.exe" -ArgumentList "tcp","3389" -WindowStyle Hidden
+          
+          # Chờ tunnel khởi tạo
+          Start-Sleep -Seconds 8
+          
+          # Lấy public URL từ API local
+          $ngrokUrl = $null
+          for ($i = 0; $i -lt 15; $i++) {
+              try {
+                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:4040/api/tunnels" -UseBasicParsing -ErrorAction SilentlyContinue
+                  $json = $resp.Content | ConvertFrom-Json
+                  $ngrokUrl = ($json.tunnels | Select-Object -First 1).public_url
+                  if ($ngrokUrl) { break }
+              } catch {}
+              Start-Sleep -Seconds 2
+          }
+          
+          if ($ngrokUrl) {
+              echo "NGROK_URL=$ngrokUrl" >> $env:GITHUB_ENV
+              Write-Host "Ngrok URL: $ngrokUrl"
+          } else {
+              echo "NGROK_URL=KhongLayDuoc" >> $env:GITHUB_ENV
+              Write-Host "Khong lay duoc URL ngrok"
+          }
+
+      # HIỂN THỊ THÔNG TIN
+      - name: Thong tin ket noi
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "         THONG TIN KET NOI RDP"
+          Write-Host "========================================"
+          Write-Host "Ngrok URL : $env:NGROK_URL"
+          Write-Host "User      : admin"
+          Write-Host "Password  : admin@9876543211@@"
+          Write-Host "Port      : 3389 (qua ngrok)"
+          Write-Host "========================================"
+
+      # DUY TRÌ PHIÊN
+      - name: Duy tri phien
+        run: |
+          $durationInput = "${{ github.event.inputs.duration }}"
+          switch ($durationInput) {
+              "1h" { $totalMinutes = 60 }
+              "3h" { $totalMinutes = 180 }
+              "5h40m" { $totalMinutes = 340 }
+          }
+          
+          $thoiGianKetThuc = (Get-Date).AddMinutes($totalMinutes)
+          Write-Host "Bat dau: $(Get-Date -Format 'HH:mm:ss')"
+          Write-Host "Ket thuc: $($thoiGianKetThuc.ToString('HH:mm:ss'))"
+          Write-Host "Dang duy tri phien..."
+          
+          while ((Get-Date) -lt $thoiGianKetThuc) {
+              $conLai = $thoiGianKetThuc - (Get-Date)
+              Write-Host "`rCon lai: $([math]::Floor($conLai.TotalHours)) gio $([math]::Floor($conLai.TotalMinutes % 60)) phut" -NoNewline
+              Start-Sleep -Seconds 30
+          }
+          
+          Write-Host ""
+          Write-Host "Het thoi gian!"
+
+      # DỌN DẸP
+      - name: Don dep
+        if: always()
+        run: |
+          Disable-LocalUser -Name "admin" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall delete rule name="RDP" dir=in -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 1 -Force -ErrorAction SilentlyContinue
+          Stop-Service -Name TermService -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "Don dep hoan tat!"
