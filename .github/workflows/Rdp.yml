@@ -22,14 +22,10 @@ jobs:
       # CẤU HÌNH HỆ THỐNG + TẮT PASSWORD POLICY
       - name: Cau hinh he thong
         run: |
-          # Tat password complexity policy
-          $cfg = "$env:TEMP\secpol.cfg"
-          secedit /export /cfg $cfg /quiet
-          (Get-Content $cfg) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | Set-Content $cfg
-          secedit /configure /db "$env:TEMP\secedit.sdb" /cfg $cfg /quiet
-          Remove-Item $cfg -Force -ErrorAction SilentlyContinue
+          secedit /export /cfg "$env:TEMP\secpol.cfg" /quiet
+          (Get-Content "$env:TEMP\secpol.cfg") -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | Set-Content "$env:TEMP\secpol.cfg"
+          secedit /configure /db "$env:TEMP\secedit.sdb" /cfg "$env:TEMP\secpol.cfg" /quiet
 
-          # Bat RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
@@ -45,11 +41,11 @@ jobs:
           # Xoa user cu neu co
           net user admin /delete 2>$null
           
-          # Tao user moi
-          net user admin $matKhau /add /expires:never /active:yes
+          # Tao user moi (echo Y de xac nhan password > 14 ky tu)
+          echo Y | net user admin "$matKhau" /add /expires:never /active:yes
           net localgroup Administrators admin /add 2>$null
           net localgroup "Remote Desktop Users" admin /add 2>$null
-          wmic useraccount where "name='admin'" set PasswordExpires=False 2>$null
+          net user admin /passwordchg:no 2>$null
           
           echo "RDP_USER=admin" >> $env:GITHUB_ENV
           echo "RDP_PASS=$matKhau" >> $env:GITHUB_ENV
