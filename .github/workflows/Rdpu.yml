@@ -3,7 +3,6 @@ name: RDP PREMIUM EGE
 on:
   workflow_dispatch:
     inputs:
-
       duration:
         description: "Session duration"
         required: true
@@ -34,18 +33,16 @@ on:
 jobs:
 
   RDP:
-
     runs-on: windows-latest
-
     timeout-minutes: 340
 
     steps:
 
-      # =========================================
+      # ==========================================
       # START
-      # =========================================
+      # ==========================================
 
-      - name: START
+      - name: START RDP
         shell: powershell
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
@@ -62,9 +59,9 @@ jobs:
           Write-Host "========================================"
 
 
-      # =========================================
+      # ==========================================
       # ENABLE RDP
-      # =========================================
+      # ==========================================
 
       - name: Configure RDP
         shell: powershell
@@ -80,6 +77,7 @@ jobs:
           $tcpPath = `
             "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
 
+
           # Enable RDP
 
           Set-ItemProperty `
@@ -88,7 +86,8 @@ jobs:
             -Value 0 `
             -Force
 
-          # Require Network Level Authentication
+
+          # Enable NLA
 
           Set-ItemProperty `
             -Path $tcpPath `
@@ -96,14 +95,35 @@ jobs:
             -Value 1 `
             -Force
 
-          # Set RDP port
 
-          Set-ItemProperty `
+          # ========================================
+          # Set RDP Port
+          # ========================================
+
+          $existing = Get-ItemProperty `
             -Path $tcpPath `
             -Name "PortNumber" `
-            -PropertyType DWord `
-            -Value $port `
-            -Force
+            -ErrorAction SilentlyContinue
+
+          if ($null -ne $existing) {
+
+              Set-ItemProperty `
+                -Path $tcpPath `
+                -Name "PortNumber" `
+                -Value $port `
+                -Force
+
+          }
+          else {
+
+              New-ItemProperty `
+                -Path $tcpPath `
+                -Name "PortNumber" `
+                -PropertyType DWord `
+                -Value $port `
+                -Force
+          }
+
 
           # RDP service
 
@@ -115,12 +135,14 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "RDP configuration complete."
+          Start-Sleep -Seconds 3
+
+          Write-Host "RDP configured on TCP ${port}."
 
 
-      # =========================================
+      # ==========================================
       # FIREWALL
-      # =========================================
+      # ==========================================
 
       - name: Configure RDP Firewall
         shell: powershell
@@ -128,13 +150,14 @@ jobs:
 
           $port = [int]"${{ github.event.inputs.rdp_port }}"
 
-          Write-Host "Configuring firewall for TCP ${port}..."
+          Write-Host "Configuring firewall TCP ${port}..."
 
           Get-NetFirewallRule `
             -DisplayName "EGE-RDP-*" `
             -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule `
             -ErrorAction SilentlyContinue
+
 
           New-NetFirewallRule `
             -DisplayName "EGE-RDP-${port}" `
@@ -144,12 +167,13 @@ jobs:
             -Action Allow `
             -Profile Any
 
+
           Write-Host "Firewall TCP ${port}: OK"
 
 
-      # =========================================
-      # CREATE USER
-      # =========================================
+      # ==========================================
+      # CREATE RDP USER
+      # ==========================================
 
       - name: Create RDP User
         shell: powershell
@@ -168,11 +192,14 @@ jobs:
               exit 1
           }
 
+
           Write-Host "Creating RDP user..."
+
 
           $oldUser = Get-LocalUser `
             -Name $username `
             -ErrorAction SilentlyContinue
+
 
           if ($oldUser) {
 
@@ -181,37 +208,43 @@ jobs:
                 -ErrorAction SilentlyContinue
           }
 
+
           $securePassword = ConvertTo-SecureString `
             $password `
             -AsPlainText `
             -Force
+
 
           New-LocalUser `
             -Name $username `
             -Password $securePassword `
             -AccountNeverExpires `
             -PasswordNeverExpires `
-            -Description "EGE RDP"
+            -Description "EGE RDP Admin"
+
 
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
+
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
+
           Enable-LocalUser `
             -Name $username
 
-          Write-Host "RDP user ready."
+
+          Write-Host "RDP user created."
 
 
-      # =========================================
+      # ==========================================
       # INSTALL WIREGUARD
-      # =========================================
+      # ==========================================
 
       - name: Install WireGuard
         shell: powershell
@@ -226,6 +259,7 @@ jobs:
             --accept-package-agreements `
             --accept-source-agreements
 
+
           if ($LASTEXITCODE -ne 0) {
 
               Write-Host "WireGuard installation failed."
@@ -233,16 +267,16 @@ jobs:
               exit 1
           }
 
+
           Write-Host "WireGuard installed."
 
 
-      # =========================================
+      # ==========================================
       # CREATE EGRET CONFIG
-      # =========================================
+      # ==========================================
 
       - name: Create Egret Config
         shell: powershell
-
         env:
           EGRET_WG_CONFIG: ${{ secrets.EGRET_WG_CONFIG }}
 
@@ -255,7 +289,9 @@ jobs:
               exit 1
           }
 
+
           $configPath = "$env:TEMP\egret.conf"
+
 
           [System.IO.File]::WriteAllText(
               $configPath,
@@ -263,12 +299,13 @@ jobs:
               [System.Text.UTF8Encoding]::new($false)
           )
 
+
           Write-Host "Egret configuration created."
 
 
-      # =========================================
+      # ==========================================
       # CONNECT EGRET
-      # =========================================
+      # ==========================================
 
       - name: Connect Egret
         shell: powershell
@@ -279,12 +316,14 @@ jobs:
 
           $config = "$env:TEMP\egret.conf"
 
+
           if (-not (Test-Path $wireguard)) {
 
               Write-Host "WireGuard executable not found."
 
               exit 1
           }
+
 
           if (-not (Test-Path $config)) {
 
@@ -293,15 +332,20 @@ jobs:
               exit 1
           }
 
-          Write-Host "Connecting to Egret..."
+
+          Write-Host "Connecting to Egret WireGuard..."
+
 
           & $wireguard /installtunnelservice $config
 
+
           Start-Sleep -Seconds 10
 
+
           Write-Host ""
-          Write-Host "WireGuard tunnel services:"
+          Write-Host "WireGuard services:"
           Write-Host ""
+
 
           Get-Service |
             Where-Object {
@@ -311,9 +355,9 @@ jobs:
             Format-Table -AutoSize
 
 
-      # =========================================
-      # EGRET NETWORK CHECK
-      # =========================================
+      # ==========================================
+      # CHECK EGRET
+      # ==========================================
 
       - name: Check Egret Network
         shell: powershell
@@ -321,12 +365,14 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "       EGRET NETWORK CHECK"
+          Write-Host "        EGRET NETWORK CHECK"
           Write-Host "========================================"
 
+
           Write-Host ""
-          Write-Host "[1] WireGuard Adapter"
+          Write-Host "[1] WireGuard adapter"
           Write-Host ""
+
 
           Get-NetAdapter |
             Where-Object {
@@ -335,9 +381,11 @@ jobs:
             Select-Object Name, Status, InterfaceDescription |
             Format-Table -AutoSize
 
+
           Write-Host ""
-          Write-Host "[2] WireGuard IP"
+          Write-Host "[2] Egret IP"
           Write-Host ""
+
 
           Get-NetIPAddress `
             -AddressFamily IPv4 |
@@ -347,15 +395,19 @@ jobs:
             Select-Object IPAddress, InterfaceAlias |
             Format-Table -AutoSize
 
+
           Write-Host ""
-          Write-Host "[3] Route 10.77.0.0/16"
+          Write-Host "[3] Route"
           Write-Host ""
+
 
           route print 10.77.0.0
 
+
           Write-Host ""
-          Write-Host "[4] WireGuard Service"
+          Write-Host "[4] WireGuard service"
           Write-Host ""
+
 
           Get-Service |
             Where-Object {
@@ -365,9 +417,9 @@ jobs:
             Format-Table -AutoSize
 
 
-      # =========================================
-      # RDP CHECK
-      # =========================================
+      # ==========================================
+      # FINAL RDP CHECK
+      # ==========================================
 
       - name: FINAL RDP CHECK
         shell: powershell
@@ -375,19 +427,25 @@ jobs:
 
           $port = [int]"${{ github.event.inputs.rdp_port }}"
 
+
           Write-Host ""
           Write-Host "========================================"
           Write-Host "          FINAL RDP CHECK"
           Write-Host "========================================"
           Write-Host ""
 
+
+          # ----------------------------------------
           # Service
+          # ----------------------------------------
 
           $service = Get-Service `
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
+
           Write-Host "TermService: $($service.Status)"
+
 
           if ($service.Status -ne "Running") {
 
@@ -398,25 +456,34 @@ jobs:
               Start-Sleep -Seconds 3
           }
 
-          # Registry
 
-          $rdpPath = `
+          # ----------------------------------------
+          # Registry
+          # ----------------------------------------
+
+          $tcpPath = `
             "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+
 
           $configuredPort = (
               Get-ItemProperty `
-                -Path $rdpPath `
+                -Path $tcpPath `
                 -Name "PortNumber"
           ).PortNumber
 
-          Write-Host "Registry RDP Port: ${configuredPort}"
 
+          Write-Host "Registry RDP port: ${configuredPort}"
+
+
+          # ----------------------------------------
           # Listener
+          # ----------------------------------------
 
           $listen = Get-NetTCPConnection `
             -LocalPort $port `
             -State Listen `
             -ErrorAction SilentlyContinue
+
 
           if ($listen) {
 
@@ -430,15 +497,20 @@ jobs:
               exit 1
           }
 
+
+          # ----------------------------------------
           # Local TCP
+          # ----------------------------------------
 
           Write-Host ""
-          Write-Host "Local TCP test..."
+          Write-Host "Testing localhost:${port}..."
+
 
           $test = Test-NetConnection `
             -ComputerName "127.0.0.1" `
             -Port $port `
             -WarningAction SilentlyContinue
+
 
           if ($test.TcpTestSucceeded) {
 
@@ -452,10 +524,14 @@ jobs:
               exit 1
           }
 
+
+          # ----------------------------------------
           # Firewall
+          # ----------------------------------------
 
           Write-Host ""
           Write-Host "Firewall:"
+
 
           Get-NetFirewallRule `
             -DisplayName "EGE-RDP-${port}" `
@@ -467,21 +543,23 @@ jobs:
               Action |
             Format-Table -AutoSize
 
+
           Write-Host ""
           Write-Host "========================================"
           Write-Host "             RDP CHECK OK"
           Write-Host "========================================"
 
 
-      # =========================================
+      # ==========================================
       # READY
-      # =========================================
+      # ==========================================
 
       - name: RDP READY
         shell: powershell
         run: |
 
           $port = "${{ github.event.inputs.rdp_port }}"
+
 
           Write-Host ""
           Write-Host "========================================"
@@ -492,24 +570,23 @@ jobs:
           Write-Host "Port     : ${port}"
           Write-Host "Network  : Egret WireGuard"
           Write-Host ""
-          Write-Host "Egret public IP + port:"
-          Write-Host ""
+          Write-Host "Connect:"
           Write-Host "PUBLIC_IP:${port}"
           Write-Host ""
           Write-Host "========================================"
 
 
-      # =========================================
+      # ==========================================
       # KEEP ALIVE
-      # =========================================
+      # ==========================================
 
       - name: Keep RDP Alive
         shell: powershell
         run: |
 
           $port = [int]"${{ github.event.inputs.rdp_port }}"
-
           $duration = "${{ github.event.inputs.duration }}"
+
 
           switch ($duration) {
 
@@ -530,13 +607,16 @@ jobs:
               }
           }
 
+
           $endTime = `
             (Get-Date).AddMinutes($totalMinutes)
+
 
           Write-Host ""
           Write-Host "RDP port: ${port}"
           Write-Host "Duration: ${totalMinutes} minutes"
           Write-Host ""
+
 
           while ((Get-Date) -lt $endTime) {
 
@@ -545,6 +625,7 @@ jobs:
               $service = Get-Service `
                 -Name "TermService" `
                 -ErrorAction SilentlyContinue
+
 
               if ($service.Status -ne "Running") {
 
@@ -555,16 +636,18 @@ jobs:
                     -ErrorAction SilentlyContinue
               }
 
-              # Check listener
+
+              # Check RDP listener
 
               $listen = Get-NetTCPConnection `
                 -LocalPort $port `
                 -State Listen `
                 -ErrorAction SilentlyContinue
 
+
               if (-not $listen) {
 
-                  Write-Host "RDP port ${port} stopped listening."
+                  Write-Host "RDP TCP ${port} stopped listening."
 
                   Restart-Service `
                     -Name "TermService" `
@@ -574,34 +657,41 @@ jobs:
                   Start-Sleep -Seconds 5
               }
 
+
               # Remaining time
 
               $remaining = `
                 $endTime - (Get-Date)
 
+
               $hours = [math]::Floor(
                 $remaining.TotalHours
               )
 
+
               $minutesLeft = `
                 $remaining.Minutes
+
 
               $secondsLeft = `
                 $remaining.Seconds
 
+
               Write-Host `
                 "RDP ${port} | ${hours}h ${minutesLeft}m ${secondsLeft}s remaining"
 
+
               Start-Sleep -Seconds 30
           }
+
 
           Write-Host ""
           Write-Host "RDP session expired."
 
 
-      # =========================================
+      # ==========================================
       # CLEANUP
-      # =========================================
+      # ==========================================
 
       - name: Cleanup
         if: always()
@@ -610,9 +700,11 @@ jobs:
 
           Write-Host "Cleaning up..."
 
+
           # Remove Egret config
 
           $config = "$env:TEMP\egret.conf"
+
 
           if (Test-Path $config) {
 
@@ -622,10 +714,12 @@ jobs:
                 -ErrorAction SilentlyContinue
           }
 
+
           # Stop WireGuard
 
           $wireguard = `
             "$env:ProgramFiles\WireGuard\wireguard.exe"
+
 
           if (Test-Path $wireguard) {
 
@@ -642,6 +736,7 @@ jobs:
                 }
           }
 
+
           # Remove firewall rules
 
           Get-NetFirewallRule `
@@ -650,10 +745,12 @@ jobs:
             Remove-NetFirewallRule `
             -ErrorAction SilentlyContinue
 
+
           # Disable user
 
           Disable-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
+
 
           Write-Host "Cleanup complete."
