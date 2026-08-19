@@ -224,4 +224,223 @@ jobs:
       # ==============================
       # CONNECT EGRET
       # ==============================
-      - name: Connect Eg
+      - name: Connect Egret
+        shell: powershell
+        run: |
+          Write-Host "Connecting to Egret WireGuard..."
+
+          $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
+          $config = "$env:TEMP\egret.conf"
+
+          if (-not (Test-Path $wireguard)) {
+              Write-Host "WireGuard executable not found."
+              exit 1
+          }
+
+          if (-not (Test-Path $config)) {
+              Write-Host "Egret config not found."
+              exit 1
+          }
+
+          & $wireguard /installtunnelservice $config
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "Checking WireGuard services..."
+
+          Get-Service |
+            Where-Object {
+              $_.Name -like "WireGuardTunnel*"
+            } |
+            Select-Object Name, Status |
+            Format-Table -AutoSize
+
+          Write-Host "Egret connection initialized."
+
+      # ==============================
+      # TEST INTERNET
+      # ==============================
+      - name: Test Egret Internet
+        shell: powershell
+        run: |
+          Write-Host "Testing Internet through Egret..."
+
+          try {
+              $response = Invoke-WebRequest `
+                -Uri "https://ifconfig.me/ip" `
+                -TimeoutSec 15 `
+                -UseBasicParsing
+
+              if ($response.StatusCode -eq 200) {
+                  Write-Host "Egret Internet connection: OK"
+              }
+              else {
+                  Write-Host "Internet test returned an unexpected status."
+              }
+          }
+          catch {
+              Write-Host "Internet test failed."
+              Write-Host $_.Exception.Message
+          }
+
+          # Public IP is intentionally NOT printed.
+
+      # ==============================
+      # CHECK RDP AGAIN
+      # ==============================
+      - name: Verify RDP
+        shell: powershell
+        run: |
+          Write-Host "Verifying RDP..."
+
+          $service = Get-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "TermService: $($service.Status)"
+
+          $listen = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($listen) {
+              Write-Host "RDP TCP 3389: LISTENING"
+          }
+          else {
+              Write-Host "RDP TCP 3389: NOT LISTENING"
+              exit 1
+          }
+
+          $firewall = Get-NetFirewallRule `
+            -DisplayName "RDP-EGE-3389" `
+            -ErrorAction SilentlyContinue
+
+          if ($firewall) {
+              Write-Host "Firewall rule: OK"
+          }
+          else {
+              Write-Host "Firewall rule not found."
+          }
+
+      # ==============================
+      # READY
+      # ==============================
+      - name: RDP Ready
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "           RDP SERVER READY"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "Username : admin"
+          Write-Host "Port     : 3389/TCP"
+          Write-Host "Network  : Egret WireGuard"
+          Write-Host "Public IP: HIDDEN"
+          Write-Host ""
+          Write-Host "Use the Egret public IP with port 3389."
+          Write-Host ""
+
+      # ==============================
+      # KEEP ALIVE
+      # ==============================
+      - name: Keep RDP Alive
+        shell: powershell
+        run: |
+          $duration = "${{ github.event.inputs.duration }}"
+
+          switch ($duration) {
+              "1h" {
+                  $minutes = 60
+              }
+
+              "3h" {
+                  $minutes = 180
+              }
+
+              "5h40m" {
+                  $minutes = 340
+              }
+
+              default {
+                  $minutes = 340
+              }
+          }
+
+          Write-Host "RDP session duration: $minutes minutes."
+
+          $endTime = (Get-Date).AddMinutes($minutes)
+
+          while ((Get-Date) -lt $endTime) {
+
+              $service = Get-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
+
+              if ($service.Status -ne "Running") {
+                  Write-Host "TermService stopped. Restarting..."
+
+                  Start-Service `
+                    -Name "TermService" `
+                    -ErrorAction SilentlyContinue
+              }
+
+              $remaining = $endTime - (Get-Date)
+
+              $hours = [math]::Floor($remaining.TotalHours)
+              $minutesLeft = $remaining.Minutes
+              $secondsLeft = $remaining.Seconds
+
+              Write-Host `
+                "RDP active - remaining: ${hours}h ${minutesLeft}m ${secondsLeft}s"
+
+              Start-Sleep -Seconds 30
+          }
+
+          Write-Host "RDP session time expired."
+
+      # ==============================
+      # CLEANUP
+      # ==============================
+      - name: Cleanup
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host "Cleaning up..."
+
+          $config = "$env:TEMP\egret.conf"
+
+          if (Test-Path $config) {
+              Remove-Item `
+                $config `
+                -Force `
+                -ErrorAction SilentlyContinue
+          }
+
+          $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
+
+          if (Test-Path $wireguard) {
+
+              Get-Service |
+                Where-Object {
+                  $_.Name -like "WireGuardTunnel*"
+                } |
+                ForEach-Object {
+
+                  Stop-Service `
+                    -Name $_.Name `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+                }
+          }
+
+          netsh advfirewall firewall delete rule `
+            name="RDP-EGE-3389" `
+            2>$null
+
+          Disable-LocalUser `
+            -Name "admin" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Cleanup complete."
