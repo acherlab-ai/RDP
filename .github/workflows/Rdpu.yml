@@ -1,17 +1,17 @@
-name: 🚀 RDP PREMIUM EGE
+name: RDP PREMIUM EGE
 
 on:
   workflow_dispatch:
     inputs:
       duration:
-        description: '🕐 Thời gian sử dụng'
+        description: "Session duration"
         required: false
-        default: '5h40m'
+        default: "5h40m"
         type: choice
         options:
-          - '1h'
-          - '3h'
-          - '5h40m'
+          - "1h"
+          - "3h"
+          - "5h40m"
 
 jobs:
   RDP:
@@ -21,45 +21,56 @@ jobs:
     steps:
 
       # ==============================
-      # KHỞI ĐỘNG RDP
+      # START
       # ==============================
-      - name: 🎯 KHỞI ĐỘNG RDP
+      - name: Start RDP
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "        🚀 RDP PREMIUM EGE" -ForegroundColor Yellow
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "🕐 Thời gian: ${{ github.event.inputs.duration }}" -ForegroundColor Magenta
-          Write-Host "🌐 Network: Egret WireGuard" -ForegroundColor Green
+          Write-Host "========================================"
+          Write-Host "        RDP PREMIUM EGE"
+          Write-Host "========================================"
+          Write-Host "Duration: ${{ github.event.inputs.duration }}"
+          Write-Host "Network: Egret WireGuard"
           Write-Host ""
 
       # ==============================
-      # CẤU HÌNH RDP
+      # ENABLE RDP
       # ==============================
-      - name: 🔧 CẤU HÌNH RDP
+      - name: Enable RDP
         shell: powershell
         run: |
-          Write-Host "🔧 Đang bật Remote Desktop..." -ForegroundColor Yellow
+          Write-Host "Enabling Remote Desktop..."
 
           Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
             -Value 0 `
             -Force
 
-          Set-Service -Name TermService -StartupType Automatic
-          Start-Service -Name TermService -ErrorAction SilentlyContinue
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1 `
+            -Force
 
-          Write-Host "✅ RDP đã bật" -ForegroundColor Green
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "RDP enabled."
 
       # ==============================
-      # FIREWALL RDP
+      # FIREWALL
       # ==============================
-      - name: 🔥 MỞ TCP 3389
+      - name: Open RDP Port
         shell: powershell
         run: |
-          Write-Host "🔥 Mở TCP 3389..." -ForegroundColor Yellow
+          Write-Host "Opening TCP 3389..."
 
           netsh advfirewall firewall add rule `
             name="RDP-EGE-3389" `
@@ -69,18 +80,25 @@ jobs:
             localport=3389 `
             profile=any
 
-          Write-Host "✅ TCP 3389 đã mở" -ForegroundColor Green
+          Write-Host "TCP 3389 opened."
 
       # ==============================
-      # TẠO USER ADMIN
+      # CREATE USER
       # ==============================
-      - name: 👤 TẠO USER ADMIN
+      - name: Create RDP User
         shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $username = "admin"
-          $password = "Hn0961718254@"
+          $password = $env:RDP_PASSWORD
 
-          Write-Host "👤 Đang tạo tài khoản..." -ForegroundColor Yellow
+          if ([string]::IsNullOrWhiteSpace($password)) {
+              Write-Host "RDP_PASSWORD secret is missing."
+              exit 1
+          }
+
+          Write-Host "Creating RDP user..."
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -114,60 +132,62 @@ jobs:
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          Enable-LocalUser -Name $username
+          Enable-LocalUser `
+            -Name $username
 
-          Write-Host "✅ User: admin" -ForegroundColor Green
-          Write-Host "✅ RDP account đã sẵn sàng" -ForegroundColor Green
+          Write-Host "User created: admin"
+          Write-Host "RDP user configuration complete."
 
       # ==============================
-      # KIỂM TRA RDP
+      # CHECK RDP
       # ==============================
-      - name: 🔍 KIỂM TRA RDP
+      - name: Check RDP
         shell: powershell
         run: |
-          Write-Host "🔍 Kiểm tra RDP..." -ForegroundColor Yellow
+          Write-Host "Checking RDP..."
 
           $user = Get-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
 
-          if ($user) {
-              Write-Host "✅ User admin tồn tại" -ForegroundColor Green
-          } else {
-              Write-Host "❌ Không tìm thấy user admin" -ForegroundColor Red
+          if (-not $user) {
+              Write-Host "RDP user does not exist."
               exit 1
           }
+
+          Write-Host "User OK."
 
           $service = Get-Service `
-            -Name TermService `
+            -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          if ($service.Status -eq "Running") {
-              Write-Host "✅ TermService đang chạy" -ForegroundColor Green
-          } else {
-              Write-Host "❌ TermService chưa chạy" -ForegroundColor Red
-              exit 1
+          if ($service.Status -ne "Running") {
+              Write-Host "TermService is not running."
+              Start-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
           }
 
-          $port = Get-NetTCPConnection `
+          $listen = Get-NetTCPConnection `
             -LocalPort 3389 `
             -State Listen `
             -ErrorAction SilentlyContinue
 
-          if ($port) {
-              Write-Host "✅ TCP 3389 đang LISTEN" -ForegroundColor Green
-          } else {
-              Write-Host "❌ TCP 3389 chưa LISTEN" -ForegroundColor Red
+          if ($listen) {
+              Write-Host "TCP 3389 is listening."
+          }
+          else {
+              Write-Host "TCP 3389 is NOT listening."
               exit 1
           }
 
       # ==============================
-      # CÀI WIREGUARD
+      # INSTALL WIREGUARD
       # ==============================
-      - name: 🌐 CÀI EGRET WIREGUARD
+      - name: Install WireGuard
         shell: powershell
         run: |
-          Write-Host "🌐 Cài WireGuard..." -ForegroundColor Yellow
+          Write-Host "Installing WireGuard..."
 
           winget install `
             --id WireGuard.WireGuard `
@@ -176,212 +196,32 @@ jobs:
             --accept-package-agreements `
             --accept-source-agreements
 
-          Write-Host "✅ WireGuard đã cài" -ForegroundColor Green
+          Write-Host "WireGuard installation complete."
 
       # ==============================
-      # TẠO CONFIG EGRET
+      # CREATE EGRET CONFIG
       # ==============================
-      - name: 🔐 CẤU HÌNH EGRET
+      - name: Create Egret Config
         shell: powershell
         env:
           EGRET_CONFIG: ${{ secrets.EGRET_WG_CONFIG }}
         run: |
-          Write-Host "🔐 Đang tạo cấu hình Egret..." -ForegroundColor Yellow
+          if ([string]::IsNullOrWhiteSpace($env:EGRET_CONFIG)) {
+              Write-Host "EGRET_WG_CONFIG secret is missing."
+              exit 1
+          }
 
           $configPath = "$env:TEMP\egret.conf"
 
           [System.IO.File]::WriteAllText(
               $configPath,
-              $env:EGRET_CONFIG
+              $env:EGRET_CONFIG,
+              [System.Text.UTF8Encoding]::new($false)
           )
 
-          icacls $configPath /inheritance:r | Out-Null
-          icacls $configPath /grant:r "$env:USERNAME:F" | Out-Null
-
-          Write-Host "✅ Config Egret đã sẵn sàng" -ForegroundColor Green
+          Write-Host "Egret configuration created."
 
       # ==============================
-      # KẾT NỐI EGRET
+      # CONNECT EGRET
       # ==============================
-      - name: 🔗 KẾT NỐI EGRET
-        shell: powershell
-        run: |
-          Write-Host "🔗 Đang kết nối Egret WireGuard..." -ForegroundColor Yellow
-
-          $wireguard = "${env:ProgramFiles}\WireGuard\wireguard.exe"
-          $config = "$env:TEMP\egret.conf"
-
-          if (!(Test-Path $wireguard)) {
-              Write-Host "❌ Không tìm thấy WireGuard" -ForegroundColor Red
-              exit 1
-          }
-
-          & $wireguard /installtunnelservice $config
-
-          Start-Sleep -Seconds 10
-
-          Get-Service |
-            Where-Object {
-              $_.Name -like "WireGuardTunnel*"
-            } |
-            Format-Table Name, Status
-
-          Write-Host "✅ Egret WireGuard đã kết nối" -ForegroundColor Green
-
-      # ==============================
-      # KIỂM TRA EGRET
-      # KHÔNG HIỂN THỊ IP
-      # ==============================
-      - name: 🌐 KIỂM TRA KẾT NỐI EGRET
-        shell: powershell
-        run: |
-          Write-Host "🌐 Kiểm tra kết nối Internet..." -ForegroundColor Yellow
-
-          try {
-              $result = Invoke-RestMethod `
-                -Uri "https://ifconfig.me/ip" `
-                -TimeoutSec 15
-
-              if ($result) {
-                  Write-Host "✅ Egret Internet connection: OK" -ForegroundColor Green
-              } else {
-                  Write-Host "⚠️ Không lấy được trạng thái IP" -ForegroundColor Yellow
-              }
-          }
-          catch {
-              Write-Host "⚠️ Không kiểm tra được Internet" -ForegroundColor Yellow
-          }
-
-          # Không echo IP
-
-      # ==============================
-      # KIỂM TRA INBOUND RDP
-      # ==============================
-      - name: 🔌 KIỂM TRA TCP 3389
-        shell: powershell
-        run: |
-          Write-Host "🔌 Kiểm tra TCP 3389..." -ForegroundColor Yellow
-
-          $listen = Get-NetTCPConnection `
-            -LocalPort 3389 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if ($listen) {
-              Write-Host "✅ RDP đang LISTEN TCP 3389" -ForegroundColor Green
-          } else {
-              Write-Host "❌ RDP không LISTEN TCP 3389" -ForegroundColor Red
-              exit 1
-          }
-
-      # ==============================
-      # THÔNG TIN ĐĂNG NHẬP
-      # KHÔNG HIỂN THỊ IP
-      # ==============================
-      - name: 🎉 RDP READY
-        shell: powershell
-        run: |
-          Write-Host ""
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "       🎉 RDP PREMIUM READY" -ForegroundColor Green
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "👤 User     : admin" -ForegroundColor White
-          Write-Host "🔐 Password : Hn0961718254@" -ForegroundColor White
-          Write-Host "🔌 Port     : 3389/TCP" -ForegroundColor White
-          Write-Host "🌐 Network  : Egret WireGuard" -ForegroundColor White
-          Write-Host ""
-          Write-Host "⚠️ IP không được hiển thị trong log." -ForegroundColor Yellow
-          Write-Host ""
-
-      # ==============================
-      # DUY TRÌ RDP
-      # ==============================
-      - name: ⏳ DUY TRÌ RDP
-        shell: powershell
-        run: |
-          switch ("${{ github.event.inputs.duration }}") {
-              "1h" {
-                  $minutes = 60
-              }
-
-              "3h" {
-                  $minutes = 180
-              }
-
-              "5h40m" {
-                  $minutes = 340
-              }
-
-              default {
-                  $minutes = 340
-              }
-          }
-
-          Write-Host "🚀 RDP đang hoạt động..." -ForegroundColor Green
-          Write-Host "⏱️ Thời gian: $minutes phút" -ForegroundColor Cyan
-
-          $end = (Get-Date).AddMinutes($minutes)
-
-          while ((Get-Date) -lt $end) {
-
-              $service = Get-Service `
-                -Name TermService `
-                -ErrorAction SilentlyContinue
-
-              if ($service.Status -ne "Running") {
-                  Write-Host "🔄 RDP service đã dừng, đang khởi động lại..." -ForegroundColor Yellow
-
-                  Start-Service `
-                    -Name TermService `
-                    -ErrorAction SilentlyContinue
-              }
-
-              $remaining = $end - (Get-Date)
-
-              Write-Host `
-                "[$(Get-Date -Format 'HH:mm:ss')] RDP hoạt động - còn $([int]$remaining.TotalMinutes) phút" `
-                -ForegroundColor Cyan
-
-              Start-Sleep -Seconds 60
-          }
-
-          Write-Host ""
-          Write-Host "⏰ HẾT THỜI GIAN RDP" -ForegroundColor Yellow
-
-      # ==============================
-      # DỌN DẸP
-      # ==============================
-      - name: 🧹 DỌN DẸP
-        if: always()
-        shell: powershell
-        run: |
-          Write-Host "🧹 Đang dọn dẹp..." -ForegroundColor Yellow
-
-          $config = "$env:TEMP\egret.conf"
-
-          if (Test-Path $config) {
-              Remove-Item $config -Force -ErrorAction SilentlyContinue
-          }
-
-          $wireguard = "${env:ProgramFiles}\WireGuard\wireguard.exe"
-
-          if (Test-Path $wireguard) {
-              Get-Service |
-                Where-Object {
-                  $_.Name -like "WireGuardTunnel*"
-                } |
-                ForEach-Object {
-                  Stop-Service $_.Name -Force -ErrorAction SilentlyContinue
-                }
-          }
-
-          netsh advfirewall firewall delete rule `
-            name="RDP-EGE-3389" `
-            ErrorAction SilentlyContinue
-
-          Disable-LocalUser `
-            -Name "admin" `
-            -ErrorAction SilentlyContinue
-
-          Write-Host "✅ Dọn dẹp hoàn tất" -ForegroundColor Green
+      - name: Connect Eg
