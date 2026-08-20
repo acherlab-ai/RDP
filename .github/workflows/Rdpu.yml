@@ -14,7 +14,7 @@ on:
           - "5h40m"
 
       rdp_port:
-        description: "RDP Port (1024-65535)"
+        description: "RDP Public Port (1024-65535)"
         required: true
         default: "3389"
         type: string
@@ -26,9 +26,9 @@ jobs:
 
     steps:
 
-      # ==============================
+      # ==========================================
       # START
-      # ==============================
+      # ==========================================
       - name: Start RDP
         shell: powershell
         run: |
@@ -42,11 +42,12 @@ jobs:
           Write-Host "RDP Port : $port"
           Write-Host "Internal : 3389"
           Write-Host "Network  : Egret WireGuard"
+          Write-Host "========================================"
           Write-Host ""
 
-      # ==============================
+      # ==========================================
       # VALIDATE PORT
-      # ==============================
+      # ==========================================
       - name: Validate RDP Port
         shell: powershell
         run: |
@@ -64,11 +65,12 @@ jobs:
               exit 1
           }
 
-          Write-Host "Port validated: $port"
+          Write-Host "Requested port: $port"
+          Write-Host "Port validation: OK"
 
-      # ==============================
+      # ==========================================
       # ENABLE RDP
-      # ==============================
+      # ==========================================
       - name: Enable RDP
         shell: powershell
         run: |
@@ -94,11 +96,13 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
+          Start-Sleep -Seconds 3
+
           Write-Host "RDP enabled."
 
-      # ==============================
-      # CREATE USER
-      # ==============================
+      # ==========================================
+      # CREATE RDP USER
+      # ==========================================
       - name: Create RDP User
         shell: powershell
         env:
@@ -108,9 +112,11 @@ jobs:
           $password = $env:RDP_PASSWORD
 
           if ([string]::IsNullOrWhiteSpace($password)) {
-              Write-Host "RDP_PASSWORD secret is missing."
+              Write-Host "ERROR: RDP_PASSWORD secret is missing."
               exit 1
           }
+
+          Write-Host "Creating RDP user..."
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -122,6 +128,8 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($oldUser) {
+              Write-Host "Removing existing user..."
+
               Remove-LocalUser `
                 -Name $username `
                 -ErrorAction SilentlyContinue
@@ -147,11 +155,11 @@ jobs:
           Enable-LocalUser `
             -Name $username
 
-          Write-Host "User created: admin"
+          Write-Host "RDP user created: $username"
 
-      # ==============================
+      # ==========================================
       # INSTALL WIREGUARD
-      # ==============================
+      # ==========================================
       - name: Install WireGuard
         shell: powershell
         run: |
@@ -166,16 +174,16 @@ jobs:
 
           Write-Host "WireGuard installation complete."
 
-      # ==============================
+      # ==========================================
       # CREATE EGRET CONFIG
-      # ==============================
+      # ==========================================
       - name: Create Egret Config
         shell: powershell
         env:
           EGRET_CONFIG: ${{ secrets.EGRET_WG_CONFIG }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:EGRET_CONFIG)) {
-              Write-Host "EGRET_WG_CONFIG secret is missing."
+              Write-Host "ERROR: EGRET_WG_CONFIG secret is missing."
               exit 1
           }
 
@@ -189,9 +197,9 @@ jobs:
 
           Write-Host "Egret configuration created."
 
-      # ==============================
+      # ==========================================
       # CONNECT EGRET
-      # ==============================
+      # ==========================================
       - name: Connect Egret
         shell: powershell
         run: |
@@ -201,12 +209,12 @@ jobs:
           $config = "$env:TEMP\egret.conf"
 
           if (-not (Test-Path $wireguard)) {
-              Write-Host "WireGuard executable not found."
+              Write-Host "ERROR: WireGuard executable not found."
               exit 1
           }
 
           if (-not (Test-Path $config)) {
-              Write-Host "Egret config not found."
+              Write-Host "ERROR: Egret config not found."
               exit 1
           }
 
@@ -214,7 +222,8 @@ jobs:
 
           Start-Sleep -Seconds 10
 
-          Write-Host "Checking WireGuard services..."
+          Write-Host ""
+          Write-Host "WireGuard services:"
 
           Get-Service |
             Where-Object {
@@ -223,11 +232,12 @@ jobs:
             Select-Object Name, Status |
             Format-Table -AutoSize
 
+          Write-Host ""
           Write-Host "Egret connection initialized."
 
-      # ==============================
-      # VERIFY WIREGUARD
-      # ==============================
+      # ==========================================
+      # VERIFY EGRET IP
+      # ==========================================
       - name: Verify Egret
         shell: powershell
         run: |
@@ -240,44 +250,149 @@ jobs:
               $_.IPAddress -eq "10.77.1.7"
             }
 
-          if ($ip) {
-              Write-Host "Egret IP 10.77.1.7: OK"
+          if (-not $ip) {
+              Write-Host "ERROR: 10.77.1.7 was not found."
+              exit 1
+          }
+
+          Write-Host "Egret IP 10.77.1.7: OK"
+
+          Write-Host ""
+          Write-Host "Egret interface:"
+          Get-NetIPAddress `
+            -AddressFamily IPv4 |
+            Where-Object {
+              $_.IPAddress -like "10.77.*"
+            } |
+            Format-Table IPAddress, InterfaceAlias
+
+          Write-Host ""
+          Write-Host "Egret route:"
+          route print 10.77.0.0
+
+      # ==========================================
+      # TEST LOCAL RDP
+      # ==========================================
+      - name: Test Local RDP
+        shell: powershell
+        run: |
+          Write-Host "Testing local Windows RDP..."
+
+          $service = Get-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $service) {
+              Write-Host "ERROR: TermService not found."
+              exit 1
+          }
+
+          if ($service.Status -ne "Running") {
+              Write-Host "TermService is stopped. Starting..."
+
+              Start-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
+
+              Start-Sleep -Seconds 3
+          }
+
+          $rdp = Test-NetConnection `
+            -ComputerName "127.0.0.1" `
+            -Port 3389 `
+            -WarningAction SilentlyContinue
+
+          if ($rdp.TcpTestSucceeded) {
+              Write-Host "Local RDP 127.0.0.1:3389: OK"
           }
           else {
-              Write-Host "Egret IP 10.77.1.7 not found."
+              Write-Host "ERROR: Local RDP 3389 is not reachable."
               exit 1
           }
 
           Write-Host ""
-          Write-Host "Checking Egret route..."
+          Write-Host "RDP listener:"
+          Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue |
+            Format-Table LocalAddress, LocalPort, State
 
-          route print 10.77.0.0
+      # ==========================================
+      # TEST EGRET GATEWAY
+      # ==========================================
+      - name: Test Egret Network
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       TEST EGRET NETWORK"
+          Write-Host "========================================"
 
-      # ==============================
-      # CONFIGURE RDP PORT
-      # ==============================
+          Write-Host ""
+          Write-Host "Testing Egret gateway 10.77.0.1..."
+
+          $gateway = Test-NetConnection `
+            -ComputerName "10.77.0.1" `
+            -WarningAction SilentlyContinue
+
+          Write-Host "Ping to 10.77.0.1: $($gateway.PingSucceeded)"
+
+          Write-Host ""
+          Write-Host "Testing TCP 10.77.0.1:1194..."
+
+          $wgTest = Test-NetConnection `
+            -ComputerName "10.77.0.1" `
+            -Port 1194 `
+            -WarningAction SilentlyContinue
+
+          Write-Host "TCP 1194: $($wgTest.TcpTestSucceeded)"
+
+          Write-Host ""
+          Write-Host "Testing RDP through WireGuard address..."
+
+          $rdpPrivate = Test-NetConnection `
+            -ComputerName "10.77.1.7" `
+            -Port 3389 `
+            -WarningAction SilentlyContinue
+
+          Write-Host "10.77.1.7:3389 TCP: $($rdpPrivate.TcpTestSucceeded)"
+
+          Write-Host ""
+          Write-Host "========================================"
+
+      # ==========================================
+      # CONFIGURE CUSTOM RDP PORT
+      # ==========================================
       - name: Configure RDP Port
         shell: powershell
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
 
+          Write-Host ""
           Write-Host "Configuring RDP port: $port"
 
-          # Remove previous portproxy
+          # Remove existing proxy for this port
           netsh interface portproxy delete `
             v4tov4 `
             listenaddress=0.0.0.0 `
             listenport=$port `
             2>$null
 
+          # Remove old firewall rule
+          netsh advfirewall firewall delete `
+            rule `
+            name="RDP-EGE-$port" `
+            2>$null
+
           if ($port -eq 3389) {
 
-              Write-Host "Using native RDP port 3389."
+              Write-Host "Using native RDP 3389."
 
           }
           else {
 
-              Write-Host "Creating port forward:"
+              Write-Host "Creating:"
               Write-Host "${port} -> 127.0.0.1:3389"
 
               netsh interface portproxy add `
@@ -289,12 +404,7 @@ jobs:
 
           }
 
-          # Open ONLY selected port
-          netsh advfirewall firewall delete `
-            rule `
-            name="RDP-EGE-$port" `
-            2>$null
-
+          # Open selected TCP port
           netsh advfirewall firewall add rule `
             name="RDP-EGE-$port" `
             dir=in `
@@ -303,11 +413,11 @@ jobs:
             localport=$port `
             profile=any
 
-          Write-Host "Firewall opened for TCP $port."
+          Write-Host "Firewall opened for TCP ${port}."
 
-      # ==============================
-      # CHECK RDP
-      # ==============================
+      # ==========================================
+      # CHECK SELECTED RDP PORT
+      # ==========================================
       - name: Check RDP
         shell: powershell
         run: |
@@ -320,13 +430,13 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if (-not $service) {
-              Write-Host "TermService service not found."
+              Write-Host "ERROR: TermService not found."
               exit 1
           }
 
           if ($service.Status -ne "Running") {
 
-              Write-Host "TermService is not running. Starting..."
+              Write-Host "Starting TermService..."
 
               Start-Service `
                 -Name "TermService" `
@@ -335,21 +445,20 @@ jobs:
               Start-Sleep -Seconds 3
           }
 
-          # Check native RDP 3389
+          # Native RDP
           $rdp = Get-NetTCPConnection `
             -LocalPort 3389 `
             -State Listen `
             -ErrorAction SilentlyContinue
 
           if (-not $rdp) {
-
-              Write-Host "RDP 3389 is NOT listening."
+              Write-Host "ERROR: RDP 3389 is NOT listening."
               exit 1
           }
 
           Write-Host "RDP 3389: LISTENING"
 
-          # Check selected external port
+          # Custom port
           if ($port -ne 3389) {
 
               $proxy = Get-NetTCPConnection `
@@ -364,7 +473,12 @@ jobs:
               }
               else {
 
-                  Write-Host "Custom port ${port}: NOT LISTENING"
+                  Write-Host "ERROR: Custom port ${port}: NOT LISTENING"
+
+                  Write-Host ""
+                  Write-Host "PortProxy table:"
+                  netsh interface portproxy show all
+
                   exit 1
               }
 
@@ -375,9 +489,9 @@ jobs:
 
           }
 
-      # ==============================
-      # SHOW PORT PROXY
-      # ==============================
+      # ==========================================
+      # SHOW PORT CONFIG
+      # ==========================================
       - name: Show RDP Port
         shell: powershell
         run: |
@@ -385,32 +499,45 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "          RDP PORT CONFIGURATION"
+          Write-Host "       RDP PORT CONFIGURATION"
           Write-Host "========================================"
+
+          Write-Host "Selected port: $port"
 
           if ($port -eq 3389) {
 
-              Write-Host "Port: 3389"
               Write-Host "Mode: Native RDP"
+              Write-Host "Destination: 3389"
 
           }
           else {
 
-              Write-Host "External Port: ${port}"
-              Write-Host "Internal Port: 3389"
+              Write-Host "Mode: PortProxy"
+              Write-Host "External: ${port}"
+              Write-Host "Internal: 3389"
               Write-Host "Forward: ${port} -> 127.0.0.1:3389"
 
           }
 
           Write-Host ""
           Write-Host "PortProxy table:"
+
           netsh interface portproxy show all
 
+          Write-Host ""
+          Write-Host "Firewall rule:"
+
+          Get-NetFirewallRule `
+            -DisplayName "RDP-EGE-$port" `
+            -ErrorAction SilentlyContinue |
+            Select-Object DisplayName, Enabled, Direction, Action
+
+          Write-Host ""
           Write-Host "========================================"
 
-      # ==============================
+      # ==========================================
       # READY
-      # ==============================
+      # ==========================================
       - name: RDP Ready
         shell: powershell
         run: |
@@ -428,24 +555,22 @@ jobs:
           Write-Host "Public IP: HIDDEN"
           Write-Host ""
 
-          if ($port -eq "3389") {
-              Write-Host "Connect using:"
-              Write-Host "EGRET_PUBLIC_IP:3389"
-          }
-          else {
-              Write-Host "Connect using:"
-              Write-Host "EGRET_PUBLIC_IP:$port"
-              Write-Host ""
+          Write-Host "Connect:"
+          Write-Host "EGRET_PUBLIC_IP:$port"
+
+          Write-Host ""
+
+          if ($port -ne "3389") {
               Write-Host "Forward:"
-              Write-Host "$port -> 3389"
+              Write-Host "$port -> 127.0.0.1:3389"
           }
 
           Write-Host ""
           Write-Host "========================================"
 
-      # ==============================
+      # ==========================================
       # KEEP ALIVE
-      # ==============================
+      # ==========================================
       - name: Keep RDP Alive
         shell: powershell
         run: |
@@ -470,6 +595,7 @@ jobs:
               }
           }
 
+          Write-Host ""
           Write-Host "RDP session duration: $minutes minutes."
 
           $endTime = (Get-Date).AddMinutes($minutes)
@@ -503,9 +629,9 @@ jobs:
 
           Write-Host "RDP session time expired."
 
-      # ==============================
+      # ==========================================
       # CLEANUP
-      # ==============================
+      # ==========================================
       - name: Cleanup
         if: always()
         shell: powershell
@@ -514,7 +640,7 @@ jobs:
 
           Write-Host "Cleaning up..."
 
-          # Remove portproxy
+          # Remove custom port proxy
           if ($port -ne 3389) {
 
               netsh interface portproxy delete `
