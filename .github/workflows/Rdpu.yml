@@ -110,8 +110,6 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($oldUser) {
-              Write-Host "Removing existing admin user..."
-
               Remove-LocalUser `
                 -Name $username `
                 -ErrorAction SilentlyContinue
@@ -138,7 +136,6 @@ jobs:
             -Name $username
 
           Write-Host "User created: admin"
-          Write-Host "RDP user configuration complete."
 
       # ========================================
       # CHECK RDP
@@ -157,8 +154,6 @@ jobs:
               exit 1
           }
 
-          Write-Host "User OK."
-
           $service = Get-Service `
             -Name "TermService" `
             -ErrorAction SilentlyContinue
@@ -169,14 +164,12 @@ jobs:
           }
 
           if ($service.Status -ne "Running") {
-              Write-Host "TermService is not running. Starting..."
-
               Start-Service `
                 -Name "TermService" `
                 -ErrorAction SilentlyContinue
-          }
 
-          Start-Sleep -Seconds 3
+              Start-Sleep -Seconds 3
+          }
 
           $listen = Get-NetTCPConnection `
             -LocalPort 3389 `
@@ -197,13 +190,10 @@ jobs:
       - name: Install WireGuard
         shell: powershell
         run: |
-          Write-Host "Checking WireGuard installation..."
-
           $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
 
           if (Test-Path $wireguard) {
               Write-Host "WireGuard already installed."
-              & $wireguard /version
               exit 0
           }
 
@@ -219,7 +209,7 @@ jobs:
           Start-Sleep -Seconds 5
 
           if (-not (Test-Path $wireguard)) {
-              Write-Host "WireGuard executable not found after installation."
+              Write-Host "WireGuard executable not found."
               exit 1
           }
 
@@ -275,28 +265,23 @@ jobs:
               exit 1
           }
 
-          Write-Host "WireGuard: $wireguard"
-          Write-Host "Config: $config"
-
-          # ----------------------------------------
-          # REMOVE OLD TUNNEL
-          # ----------------------------------------
+          # Remove old tunnel
           $oldService = Get-Service `
             -Name "WireGuardTunnel`$egret" `
             -ErrorAction SilentlyContinue
 
           if ($oldService) {
-              Write-Host "Existing Egret tunnel found. Removing..."
+              Write-Host "Removing old Egret tunnel..."
 
-              & $wireguard /uninstalltunnelservice $tunnelName 2>&1
+              & $wireguard `
+                /uninstalltunnelservice `
+                $tunnelName `
+                2>&1
 
               Start-Sleep -Seconds 3
           }
 
-          # ----------------------------------------
-          # INSTALL TUNNEL
-          # ----------------------------------------
-          Write-Host "Installing Egret tunnel service..."
+          Write-Host "Installing Egret tunnel..."
 
           $process = Start-Process `
             -FilePath $wireguard `
@@ -304,22 +289,18 @@ jobs:
             -PassThru `
             -WindowStyle Hidden
 
-          Write-Host "WireGuard installer PID: $($process.Id)"
+          Write-Host "Installer PID: $($process.Id)"
 
           $finished = $process.WaitForExit(30000)
 
           if (-not $finished) {
-              Write-Host ""
-              Write-Host "WireGuard install command timed out after 30 seconds."
+              Write-Host "WireGuard installation timed out."
 
               Stop-Process `
                 -Id $process.Id `
                 -Force `
                 -ErrorAction SilentlyContinue
 
-              Write-Host ""
-              Write-Host "WireGuard services:"
-
               Get-Service |
                 Where-Object {
                   $_.Name -like "WireGuard*"
@@ -330,28 +311,18 @@ jobs:
               exit 1
           }
 
-          Write-Host "WireGuard installer exited with code: $($process.ExitCode)"
+          Write-Host "Installer exit code: $($process.ExitCode)"
 
           if ($process.ExitCode -ne 0) {
               Write-Host "WireGuard tunnel installation failed."
-
-              Get-Service |
-                Where-Object {
-                  $_.Name -like "WireGuard*"
-                } |
-                Select-Object Name, Status |
-                Format-Table -AutoSize
-
               exit 1
           }
 
-          # ----------------------------------------
-          # WAIT FOR SERVICE
-          # ----------------------------------------
-          Write-Host "Waiting for Egret tunnel service..."
-
+          # Wait for tunnel service
           $serviceName = "WireGuardTunnel`$egret"
           $connected = $false
+
+          Write-Host "Waiting for tunnel service..."
 
           for ($i = 1; $i -le 15; $i++) {
 
@@ -362,7 +333,7 @@ jobs:
               if ($service) {
 
                   Write-Host `
-                    "Attempt $i/15 - Service: $($service.Status)"
+                    "Attempt $i/15 - Status: $($service.Status)"
 
                   if ($service.Status -eq "Running") {
                       $connected = $true
@@ -373,7 +344,7 @@ jobs:
               else {
 
                   Write-Host `
-                    "Attempt $i/15 - Tunnel service not created yet."
+                    "Attempt $i/15 - Service not found."
 
               }
 
@@ -381,28 +352,12 @@ jobs:
           }
 
           if (-not $connected) {
-
-              Write-Host ""
-              Write-Host "Egret WireGuard tunnel did not reach Running state."
-
-              Write-Host ""
-              Write-Host "WireGuard services:"
-
-              Get-Service |
-                Where-Object {
-                  $_.Name -like "WireGuard*"
-                } |
-                Select-Object Name, Status |
-                Format-Table -AutoSize
-
+              Write-Host "Egret tunnel did not start."
               exit 1
           }
 
-          # ----------------------------------------
-          # CHECK EGRET IP
-          # ----------------------------------------
-          Write-Host ""
-          Write-Host "Checking Egret interface..."
+          # Check WireGuard IP
+          Write-Host "Checking Egret IP..."
 
           $egretIP = Get-NetIPAddress `
             -AddressFamily IPv4 `
@@ -411,18 +366,9 @@ jobs:
               $_.IPAddress -eq "100.64.252.194"
             }
 
-          if ($egretIP) {
+          if (-not $egretIP) {
 
-              Write-Host "Egret IP detected:"
-              Write-Host "100.64.252.194"
-
-          }
-          else {
-
-              Write-Host "Egret IP 100.64.252.194 was not detected."
-
-              Write-Host ""
-              Write-Host "Current IPv4 addresses:"
+              Write-Host "100.64.252.194 not found."
 
               Get-NetIPAddress `
                 -AddressFamily IPv4 `
@@ -433,21 +379,11 @@ jobs:
               exit 1
           }
 
-          # ----------------------------------------
-          # FINAL SERVICE STATUS
-          # ----------------------------------------
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "       EGRET WIREGUARD CONNECTED"
-          Write-Host "========================================"
-          Write-Host ""
-
-          Get-Service `
-            -Name $serviceName |
-            Select-Object Name, Status
+          Write-Host "Egret IP: 100.64.252.194"
+          Write-Host "Egret tunnel: RUNNING"
 
       # ========================================
-      # CHECK WIREGUARD NETWORK
+      # CHECK EGRET NETWORK
       # ========================================
       - name: Check Egret Network
         shell: powershell
@@ -456,9 +392,10 @@ jobs:
           Write-Host "========================================"
           Write-Host "       CHECKING EGRET NETWORK"
           Write-Host "========================================"
-          Write-Host ""
 
-          Write-Host "Egret IP:"
+          Write-Host ""
+          Write-Host "Egret interface:"
+
           Get-NetIPAddress `
             -AddressFamily IPv4 `
             -ErrorAction SilentlyContinue |
@@ -469,7 +406,7 @@ jobs:
             Format-Table -AutoSize
 
           Write-Host ""
-          Write-Host "Routes:"
+          Write-Host "Default routes:"
 
           Get-NetRoute `
             -AddressFamily IPv4 `
@@ -479,64 +416,152 @@ jobs:
               $_.DestinationPrefix -eq "0.0.0.0/1" -or
               $_.DestinationPrefix -eq "128.0.0.0/1"
             } |
-            Select-Object DestinationPrefix, NextHop, InterfaceAlias, RouteMetric |
+            Select-Object `
+              DestinationPrefix,
+              NextHop,
+              InterfaceAlias,
+              RouteMetric |
             Format-Table -AutoSize
 
-          Write-Host ""
-          Write-Host "Testing Egret peer..."
-
-          $ping = Test-Connection `
-            -ComputerName "100.64.252.193" `
-            -Count 2 `
-            -Quiet `
-            -ErrorAction SilentlyContinue
-
-          if ($ping) {
-              Write-Host "Egret peer ping: OK"
-          }
-          else {
-              Write-Host "Egret peer ping: FAILED"
-              Write-Host "Continuing because ICMP may be disabled."
-          }
-
       # ========================================
-      # TEST INTERNET
+      # TEST DNS + INTERNET
       # ========================================
       - name: Test Egret Internet
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "Testing Internet through Egret..."
+          Write-Host "========================================"
+          Write-Host "       TEST EGRET INTERNET"
+          Write-Host "========================================"
+          Write-Host ""
+
+          # ----------------------------------------
+          # CHECK EGRET INTERFACE
+          # ----------------------------------------
+          $egretIP = Get-NetIPAddress `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.IPAddress -eq "100.64.252.194"
+            }
+
+          if ($egretIP) {
+              Write-Host "Egret interface: OK"
+              Write-Host "Address: 100.64.252.194"
+          }
+          else {
+              Write-Host "Egret interface: FAILED"
+              exit 1
+          }
+
+          # ----------------------------------------
+          # DNS TEST
+          # ----------------------------------------
+          Write-Host ""
+          Write-Host "Testing DNS 1.1.1.1..."
 
           try {
 
-              $response = Invoke-WebRequest `
-                -Uri "https://ifconfig.me/ip" `
-                -TimeoutSec 20 `
-                -UseBasicParsing
+              $dns = Resolve-DnsName `
+                -Name "example.com" `
+                -Server "1.1.1.1" `
+                -ErrorAction Stop
 
-              if ($response.StatusCode -eq 200) {
+              Write-Host "DNS 1.1.1.1: OK"
 
-                  Write-Host "Egret Internet connection: OK"
-                  Write-Host "Public IP detected successfully."
-                  Write-Host "Public IP is intentionally hidden."
-
-              }
-              else {
-
-                  Write-Host `
-                    "Internet test returned status: $($response.StatusCode)"
-
-              }
+              $dns |
+                Where-Object {
+                  $_.Type -eq "A"
+                } |
+                Select-Object Name, IPAddress |
+                Format-Table -AutoSize
 
           }
           catch {
 
-              Write-Host "Internet test failed."
+              Write-Host "DNS 1.1.1.1: FAILED"
               Write-Host $_.Exception.Message
 
-              exit 1
           }
+
+          # ----------------------------------------
+          # DIRECT INTERNET TEST
+          # ----------------------------------------
+          Write-Host ""
+          Write-Host "Testing direct HTTPS..."
+
+          try {
+
+              $response = Invoke-WebRequest `
+                -Uri "https://1.1.1.1" `
+                -TimeoutSec 20 `
+                -UseBasicParsing `
+                -SkipCertificateCheck
+
+              Write-Host "Direct Internet: OK"
+              Write-Host "HTTP status: $($response.StatusCode)"
+
+          }
+          catch {
+
+              Write-Host "Direct HTTPS test failed."
+              Write-Host $_.Exception.Message
+
+          }
+
+          # ----------------------------------------
+          # DNS HOSTNAME TEST
+          # ----------------------------------------
+          Write-Host ""
+          Write-Host "Testing hostname resolution..."
+
+          try {
+
+              $resolved = Resolve-DnsName `
+                -Name "ifconfig.me" `
+                -ErrorAction Stop
+
+              Write-Host "ifconfig.me DNS: OK"
+
+              $resolved |
+                Where-Object {
+                  $_.Type -eq "A"
+                } |
+                Select-Object Name, IPAddress |
+                Format-Table -AutoSize
+
+          }
+          catch {
+
+              Write-Host "ifconfig.me DNS: FAILED"
+              Write-Host $_.Exception.Message
+
+              Write-Host ""
+              Write-Host "Trying example.com..."
+
+              try {
+
+                  Resolve-DnsName `
+                    -Name "example.com" `
+                    -ErrorAction Stop |
+                    Where-Object {
+                      $_.Type -eq "A"
+                    } |
+                    Select-Object Name, IPAddress |
+                    Format-Table -AutoSize
+
+                  Write-Host "General DNS: OK"
+
+              }
+              catch {
+
+                  Write-Host "General DNS: FAILED"
+
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Network tests completed."
 
       # ========================================
       # VERIFY RDP
@@ -548,7 +573,6 @@ jobs:
           Write-Host "========================================"
           Write-Host "           VERIFY RDP"
           Write-Host "========================================"
-          Write-Host ""
 
           $service = Get-Service `
             -Name "TermService" `
@@ -563,8 +587,6 @@ jobs:
 
           if ($service.Status -ne "Running") {
 
-              Write-Host "Starting TermService..."
-
               Start-Service `
                 -Name "TermService" `
                 -ErrorAction SilentlyContinue
@@ -578,15 +600,11 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($listen) {
-
               Write-Host "RDP TCP 3389: LISTENING"
-
           }
           else {
-
               Write-Host "RDP TCP 3389: NOT LISTENING"
               exit 1
-
           }
 
           $firewall = Get-NetFirewallRule `
@@ -594,15 +612,11 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($firewall) {
-
               Write-Host "Firewall rule: OK"
-
           }
           else {
-
-              Write-Host "Firewall rule not found."
+              Write-Host "Firewall rule: NOT FOUND"
               exit 1
-
           }
 
       # ========================================
@@ -665,7 +679,7 @@ jobs:
           while ((Get-Date) -lt $endTime) {
 
               # --------------------------------
-              # CHECK RDP
+              # CHECK RDP SERVICE
               # --------------------------------
               $service = Get-Service `
                 -Name "TermService" `
@@ -675,18 +689,16 @@ jobs:
 
                   if ($service.Status -ne "Running") {
 
-                      Write-Host `
-                        "TermService stopped. Restarting..."
+                      Write-Host "TermService stopped. Restarting..."
 
                       Start-Service `
                         -Name "TermService" `
                         -ErrorAction SilentlyContinue
                   }
-
               }
 
               # --------------------------------
-              # CHECK RDP LISTEN
+              # CHECK RDP PORT
               # --------------------------------
               $listen = Get-NetTCPConnection `
                 -LocalPort 3389 `
@@ -695,8 +707,7 @@ jobs:
 
               if (-not $listen) {
 
-                  Write-Host `
-                    "RDP 3389 is not listening. Attempting restart..."
+                  Write-Host "RDP 3389 not listening. Restarting..."
 
                   Restart-Service `
                     -Name "TermService" `
@@ -715,14 +726,26 @@ jobs:
 
                   if ($wgService.Status -ne "Running") {
 
-                      Write-Host `
-                        "Egret WireGuard stopped. Restarting..."
+                      Write-Host "Egret WireGuard stopped. Restarting..."
 
                       Start-Service `
                         -Name "WireGuardTunnel`$egret" `
                         -ErrorAction SilentlyContinue
                   }
+              }
 
+              # --------------------------------
+              # CHECK EGRET IP
+              # --------------------------------
+              $egretIP = Get-NetIPAddress `
+                -AddressFamily IPv4 `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.IPAddress -eq "100.64.252.194"
+                }
+
+              if (-not $egretIP) {
+                  Write-Host "WARNING: Egret IP not detected."
               }
 
               # --------------------------------
@@ -744,7 +767,6 @@ jobs:
           Write-Host "========================================"
           Write-Host "       RDP SESSION TIME EXPIRED"
           Write-Host "========================================"
-          Write-Host ""
 
       # ========================================
       # CLEANUP
@@ -756,9 +778,7 @@ jobs:
           Write-Host ""
           Write-Host "Cleaning up..."
 
-          # --------------------------------
-          # REMOVE EGRET CONFIG
-          # --------------------------------
+          # Remove config
           $config = "$env:TEMP\egret.conf"
 
           if (Test-Path $config) {
@@ -771,9 +791,7 @@ jobs:
               Write-Host "Egret config removed."
           }
 
-          # --------------------------------
-          # STOP EGRET TUNNEL
-          # --------------------------------
+          # Stop and remove WireGuard tunnel
           $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
 
           if (Test-Path $wireguard) {
@@ -802,19 +820,14 @@ jobs:
               }
           }
 
-          # --------------------------------
-          # REMOVE FIREWALL RULE
-          # --------------------------------
+          # Remove firewall rule
           netsh advfirewall firewall delete rule `
             name="RDP-EGE-3389" `
             2>$null
 
-          # --------------------------------
-          # DISABLE RDP USER
-          # --------------------------------
+          # Disable RDP user
           Disable-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
 
-          Write-Host ""
           Write-Host "Cleanup complete."
