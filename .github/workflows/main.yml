@@ -38,10 +38,18 @@ jobs:
       # ===== BƯỚC 1: CẤU HÌNH RDP =====
       - name: Setup RDP
         shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}   # lấy từ secret nếu có
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
           $pass = $env:RDP_PASSWORD
-          if ([string]::IsNullOrWhiteSpace($pass)) { throw "RDP_PASSWORD missing" }
+
+          # Nếu không có secret, tự tạo mật khẩu ngẫu nhiên và in ra
+          if ([string]::IsNullOrWhiteSpace($pass)) {
+            $pass = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | ForEach-Object { [char]$_ })
+            Write-Host "⚠️  RDP_PASSWORD secret not set. Using random password: $pass"
+            Write-Host "🔑 Please save this password now! (It will not be shown again)"
+          }
 
           Write-Host "Configuring RDP on port $port..."
 
@@ -79,7 +87,7 @@ jobs:
       - name: Connect WireGuard RDP
         shell: powershell
         env:
-          WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}  # 🔐 Lưu config của bạn vào secret này
+          WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}   # Config WireGuard của bạn (chứa PrivateKey)
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) { throw "WIREGUARD_CONFIG secret is missing" }
 
@@ -150,3 +158,4 @@ jobs:
           Get-Service "WireGuardTunnel*" | Stop-Service -Force -ErrorAction SilentlyContinue
           netsh advfirewall firewall delete rule name="RDP-EGE" 2>$null
           Disable-LocalUser -Name "admin" -ErrorAction SilentlyContinue
+          Write-Host "Cleanup done."
