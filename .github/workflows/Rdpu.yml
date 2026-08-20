@@ -13,6 +13,12 @@ on:
           - "3h"
           - "5h40m"
 
+      rdp_port:
+        description: "RDP public/listen port (1024-65535)"
+        required: true
+        default: "3389"
+        type: string
+
 jobs:
   RDP:
     runs-on: windows-latest
@@ -21,16 +27,44 @@ jobs:
     steps:
 
       # ==============================
+      # CHECK PORT
+      # ==============================
+      - name: Validate RDP Port
+        shell: powershell
+        run: |
+          $port = "${{ github.event.inputs.rdp_port }}"
+
+          Write-Host "Requested RDP port: $port"
+
+          if ($port -notmatch '^\d+$') {
+              Write-Host "ERROR: Port must be a number."
+              exit 1
+          }
+
+          $portNumber = [int]$port
+
+          if ($portNumber -lt 1024 -or $portNumber -gt 65535) {
+              Write-Host "ERROR: Port must be between 1024 and 65535."
+              exit 1
+          }
+
+          Write-Host "Port is valid: $portNumber"
+
+      # ==============================
       # START
       # ==============================
       - name: Start RDP
         shell: powershell
         run: |
+          $port = "${{ github.event.inputs.rdp_port }}"
+
           Write-Host ""
           Write-Host "========================================"
           Write-Host "        RDP PREMIUM EGE"
           Write-Host "========================================"
           Write-Host "Duration: ${{ github.event.inputs.duration }}"
+          Write-Host "RDP Port: $port"
+          Write-Host "Internal RDP: 3389"
           Write-Host "Network: Egret WireGuard"
           Write-Host ""
 
@@ -40,8 +74,6 @@ jobs:
       - name: Enable RDP
         shell: powershell
         run: |
-          Write-Host "Enabling Remote Desktop..."
-
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
@@ -65,24 +97,6 @@ jobs:
           Write-Host "RDP enabled."
 
       # ==============================
-      # FIREWALL
-      # ==============================
-      - name: Open RDP Port
-        shell: powershell
-        run: |
-          Write-Host "Opening TCP 3389..."
-
-          netsh advfirewall firewall add rule `
-            name="RDP-EGE-3389" `
-            dir=in `
-            action=allow `
-            protocol=TCP `
-            localport=3389 `
-            profile=any
-
-          Write-Host "TCP 3389 opened."
-
-      # ==============================
       # CREATE USER
       # ==============================
       - name: Create RDP User
@@ -97,8 +111,6 @@ jobs:
               Write-Host "RDP_PASSWORD secret is missing."
               exit 1
           }
-
-          Write-Host "Creating RDP user..."
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -135,51 +147,7 @@ jobs:
           Enable-LocalUser `
             -Name $username
 
-          Write-Host "User created: admin"
-          Write-Host "RDP user configuration complete."
-
-      # ==============================
-      # CHECK RDP
-      # ==============================
-      - name: Check RDP
-        shell: powershell
-        run: |
-          Write-Host "Checking RDP..."
-
-          $user = Get-LocalUser `
-            -Name "admin" `
-            -ErrorAction SilentlyContinue
-
-          if (-not $user) {
-              Write-Host "RDP user does not exist."
-              exit 1
-          }
-
-          Write-Host "User OK."
-
-          $service = Get-Service `
-            -Name "TermService" `
-            -ErrorAction SilentlyContinue
-
-          if ($service.Status -ne "Running") {
-              Write-Host "TermService is not running."
-              Start-Service `
-                -Name "TermService" `
-                -ErrorAction SilentlyContinue
-          }
-
-          $listen = Get-NetTCPConnection `
-            -LocalPort 3389 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if ($listen) {
-              Write-Host "TCP 3389 is listening."
-          }
-          else {
-              Write-Host "TCP 3389 is NOT listening."
-              exit 1
-          }
+          Write-Host "RDP user created."
 
       # ==============================
       # INSTALL WIREGUARD
@@ -187,8 +155,6 @@ jobs:
       - name: Install WireGuard
         shell: powershell
         run: |
-          Write-Host "Installing WireGuard..."
-
           winget install `
             --id WireGuard.WireGuard `
             --exact `
@@ -227,8 +193,6 @@ jobs:
       - name: Connect Egret
         shell: powershell
         run: |
-          Write-Host "Connecting to Egret WireGuard..."
-
           $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
           $config = "$env:TEMP\egret.conf"
 
@@ -246,8 +210,6 @@ jobs:
 
           Start-Sleep -Seconds 10
 
-          Write-Host "Checking WireGuard services..."
-
           Get-Service |
             Where-Object {
               $_.Name -like "WireGuardTunnel*"
@@ -258,70 +220,128 @@ jobs:
           Write-Host "Egret connection initialized."
 
       # ==============================
-      # TEST INTERNET
+      # RDP PORT FORWARD
       # ==============================
-      - name: Test Egret Internet
+      - name: Configure RDP Port
         shell: powershell
         run: |
-          Write-Host "Testing Internet through Egret..."
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
 
-          try {
-              $response = Invoke-WebRequest `
-                -Uri "https://ifconfig.me/ip" `
-                -TimeoutSec 15 `
-                -UseBasicParsing
+          Write-Host "Configuring RDP port: $port"
 
-              if ($response.StatusCode -eq 200) {
-                  Write-Host "Egret Internet connection: OK"
-              }
-              else {
-                  Write-Host "Internet test returned an unexpected status."
-              }
+          # Không cho port 3389 bị tạo portproxy
+          if ($port -eq 3389) {
+
+              Write-Host "Using native RDP port 3389."
+
+              netsh advfirewall firewall add rule `
+                name="RDP-EGE-3389" `
+                dir=in `
+                action=allow `
+                protocol=TCP `
+                localport=3389 `
+                profile=any
+
           }
-          catch {
-              Write-Host "Internet test failed."
-              Write-Host $_.Exception.Message
-          }
+          else {
 
-          # Public IP is intentionally NOT printed.
+              # Xóa rule cũ nếu có
+              netsh interface portproxy delete `
+                v4tov4 `
+                listenaddress=0.0.0.0 `
+                listenport=$port `
+                2>$null
+
+              # Random/custom port -> RDP 3389
+              netsh interface portproxy add `
+                v4tov4 `
+                listenaddress=0.0.0.0 `
+                listenport=$port `
+                connectaddress=127.0.0.1 `
+                connectport=3389
+
+              # Chỉ mở đúng port người dùng nhập
+              netsh advfirewall firewall add rule `
+                name="RDP-EGE-$port" `
+                dir=in `
+                action=allow `
+                protocol=TCP `
+                localport=$port `
+                profile=any
+
+              Write-Host ""
+              Write-Host "========================================"
+              Write-Host "RDP PORT FORWARD READY"
+              Write-Host "========================================"
+              Write-Host "External : $port"
+              Write-Host "Internal : 3389"
+              Write-Host "========================================"
+          }
 
       # ==============================
-      # CHECK RDP AGAIN
+      # CHECK RDP
       # ==============================
-      - name: Verify RDP
+      - name: Check RDP
         shell: powershell
         run: |
-          Write-Host "Verifying RDP..."
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
 
           $service = Get-Service `
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "TermService: $($service.Status)"
+          if ($service.Status -ne "Running") {
+              Start-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
+          }
 
-          $listen = Get-NetTCPConnection `
+          # RDP gốc
+          $rdp = Get-NetTCPConnection `
             -LocalPort 3389 `
             -State Listen `
             -ErrorAction SilentlyContinue
 
-          if ($listen) {
-              Write-Host "RDP TCP 3389: LISTENING"
-          }
-          else {
-              Write-Host "RDP TCP 3389: NOT LISTENING"
+          if (-not $rdp) {
+              Write-Host "RDP 3389 is NOT listening."
               exit 1
           }
 
-          $firewall = Get-NetFirewallRule `
-            -DisplayName "RDP-EGE-3389" `
-            -ErrorAction SilentlyContinue
+          Write-Host "RDP 3389: LISTENING"
 
-          if ($firewall) {
-              Write-Host "Firewall rule: OK"
+          # Port custom
+          if ($port -ne 3389) {
+
+              $proxy = Get-NetTCPConnection `
+                -LocalPort $port `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if ($proxy) {
+                  Write-Host "Custom port $port: LISTENING"
+              }
+              else {
+                  Write-Host "Custom port $port: NOT LISTENING"
+                  exit 1
+              }
           }
-          else {
-              Write-Host "Firewall rule not found."
-          }
+
+      # ==============================
+      # SHOW ROUTES
+      # ==============================
+      - name: Verify Egret Route
+        shell: powershell
+        run: |
+          Write-Host "Egret interface:"
+          Get-NetIPAddress -AddressFamily IPv4 |
+            Where-Object {
+              $_.IPAddress -like "10.77.*"
+            } |
+            Format-Table IPAddress, InterfaceAlias
+
+          Write-Host ""
+          Write-Host "Route:"
+          route print 10.77.0.0
 
       # ==============================
       # READY
@@ -329,17 +349,21 @@ jobs:
       - name: RDP Ready
         shell: powershell
         run: |
+          $port = "${{ github.event.inputs.rdp_port }}"
+
           Write-Host ""
           Write-Host "========================================"
           Write-Host "           RDP SERVER READY"
           Write-Host "========================================"
           Write-Host ""
           Write-Host "Username : admin"
-          Write-Host "Port     : 3389/TCP"
+          Write-Host "Port     : $port/TCP"
+          Write-Host "Internal : 3389/TCP"
           Write-Host "Network  : Egret WireGuard"
           Write-Host "Public IP: HIDDEN"
           Write-Host ""
-          Write-Host "Use the Egret public IP with port 3389."
+          Write-Host "Connection:"
+          Write-Host "EGRET_PUBLIC_IP:$port"
           Write-Host ""
 
       # ==============================
@@ -351,6 +375,7 @@ jobs:
           $duration = "${{ github.event.inputs.duration }}"
 
           switch ($duration) {
+
               "1h" {
                   $minutes = 60
               }
@@ -379,6 +404,7 @@ jobs:
                 -ErrorAction SilentlyContinue
 
               if ($service.Status -ne "Running") {
+
                   Write-Host "TermService stopped. Restarting..."
 
                   Start-Service `
@@ -407,8 +433,33 @@ jobs:
         if: always()
         shell: powershell
         run: |
+          $port = "${{ github.event.inputs.rdp_port }}"
+
           Write-Host "Cleaning up..."
 
+          # Xóa portproxy nếu là custom port
+          if ($port -ne "3389") {
+
+              netsh interface portproxy delete `
+                v4tov4 `
+                listenaddress=0.0.0.0 `
+                listenport=$port `
+                2>$null
+
+              netsh advfirewall firewall delete `
+                rule `
+                name="RDP-EGE-$port" `
+                2>$null
+          }
+          else {
+
+              netsh advfirewall firewall delete `
+                rule `
+                name="RDP-EGE-3389" `
+                2>$null
+          }
+
+          # Xóa config
           $config = "$env:TEMP\egret.conf"
 
           if (Test-Path $config) {
@@ -418,6 +469,7 @@ jobs:
                 -ErrorAction SilentlyContinue
           }
 
+          # Ngắt WireGuard
           $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
 
           if (Test-Path $wireguard) {
@@ -435,12 +487,8 @@ jobs:
                 }
           }
 
-          netsh advfirewall firewall delete rule `
-            name="RDP-EGE-3389" `
-            2>$null
-
           Disable-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Cleanup complete."
+          Write-Host "Cleanup complete."st "Cleanup complete."
