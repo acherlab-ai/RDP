@@ -96,69 +96,57 @@ jobs:
           & $wgExe /installtunnelservice $cfg
           if ($LASTEXITCODE -ne 0) { throw "Failed to install tunnel service" }
 
-          # Chờ interface xuất hiện (tăng thời gian)
+          # Chờ interface xuất hiện
           Write-Host "Waiting for WireGuard interface to appear..."
           Start-Sleep -Seconds 10
 
-          # Kiểm tra xem config có Table = off không
+          # Kiểm tra config có Table = off không
           $configContent = Get-Content $cfg -Raw
           if ($configContent -match "Table\s*=\s*off") {
-            Write-Host "Table = off detected. Attempting to add manual routes..."
-
-            # Tìm interface WireGuard - thử nhiều cách
-            $wgInterface = $null
-
-            # Cách 1: Tìm theo tên chứa "WireGuard" hoặc "wg"
-            $wgInterface = (Get-NetAdapter | Where-Object { $_.Name -match "WireGuard|wg" -or $_.InterfaceDescription -match "WireGuard" } | Select-Object -First 1).Name
-
-            # Cách 2: Nếu không thấy, tìm interface mới nhất có IP thuộc dải của tunnel
-            if (-not $wgInterface) {
-              $ipv4 = ($configContent | Select-String -Pattern "Address\s*=\s*([\d\.]+/\d+)").Matches.Groups[1].Value
-              if ($ipv4) {
-                $ipOnly = $ipv4 -replace "/\d+", ""
-                $iface = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq $ipOnly } | Select-Object -First 1
-                if ($iface) { $wgInterface = $iface.InterfaceAlias }
-              }
-            }
-
-            # Cách 3: Dùng netsh để tìm interface index của WireGuard
-            if (-not $wgInterface) {
-              $netshOutput = netsh interface show interface
-              $wgLine = $netshOutput | Select-String -Pattern "WireGuard"
-              if ($wgLine) {
-                # Lấy tên interface từ dòng
-                $wgInterface = ($wgLine -split '\s+')[-1]
-              }
-            }
-
-            if (-not $wgInterface) {
-              Write-Host "WARNING: Could not find WireGuard interface automatically."
-              Write-Host "Listing all network adapters:"
-              Get-NetAdapter | Format-Table Name, InterfaceDescription, Status
-              Write-Host "Attempting to use default route via interface index 1 (may not work)."
-              $wgInterface = "1"  # fallback
-            }
+            Write-Host "Table = off detected. Adding manual routes..."
 
             # Lấy IPv4 address từ config
             $ipv4 = ($configContent | Select-String -Pattern "Address\s*=\s*([\d\.]+/\d+)").Matches.Groups[1].Value
-            if (-not $ipv4) {
-              throw "No IPv4 address found in config"
+            if (-not $ipv4) { throw "No IPv4 address found in config" }
+
+            # Tìm WireGuard interface
+            $wgInterface = Get-NetAdapter | Where-Object { $_.Name -match "WireGuard|wg" -or $_.InterfaceDescription -match "WireGuard" } | Select-Object -First 1
+            if (-not $wgInterface) {
+              # Thử tìm theo IP
+              $ipOnly = $ipv4 -replace "/\d+", ""
+              $iface = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq $ipOnly } | Select-Object -First 1
+              if ($iface) {
+                $wgInterface = Get-NetAdapter -Name $iface.InterfaceAlias -ErrorAction SilentlyContinue
+              }
             }
 
-            # Thêm route mặc định
-            Write-Host "Adding default route via $ipv4 on interface $wgInterface..."
-            route add 0.0.0.0 mask 0.0.0.0 $ipv4 metric 5 if $wgInterface
-            if ($LASTEXITCODE -eq 0) {
-              Write-Host "Route added successfully."
+            if (-not $wgInterface) {
+              Write-Host "ERROR: WireGuard interface not found."
+              Write-Host "Listing all adapters:"
+              Get-NetAdapter | Format-Table Name, InterfaceDescription, ifIndex, Status
+              throw "WireGuard interface not found"
+            }
+
+            $ifIndex = $wgInterface.ifIndex
+            Write-Host "Found WireGuard interface: $($wgInterface.Name) (ifIndex=$ifIndex)"
+
+            # Thêm route mặc định với metric thấp
+            route add 0.0.0.0 mask 0.0.0.0 $ipv4 metric 5 if $ifIndex
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "WARNING: Failed to add default route (exit code $LASTEXITCODE). Traffic may not go through tunnel."
             } else {
-              Write-Host "WARNING: Route add failed with exit code $LASTEXITCODE. Traffic may not go through tunnel."
+              Write-Host "Default route added successfully."
             }
 
-            # IPv6 nếu có
-            $ipv6 = ($configContent | Select-String -Pattern "Address\s*=\s*([a-fA-F0-9:]+/\d+)").Matches.Groups[1].Value
-            if ($ipv6) {
-              route add ::/0 $ipv6 metric 5 if $wgInterface
+            # Thêm IPv6 nếu có
+            $ipv6Match = $configContent | Select-String -Pattern "Address\s*=\s*([a-fA-F0-9:]+/\d+)" -AllMatches
+            if ($ipv6Match) {
+              $ipv6 = $ipv6Match.Matches[1].Groups[1].Value  # Lấy cái thứ hai (sau IPv4)
+              if ($ipv6) {
+                route add ::/0 $ipv6 metric 5 if $ifIndex
+              }
             }
+
           } else {
             Write-Host "WireGuard will add routes automatically (Table not off)"
           }
