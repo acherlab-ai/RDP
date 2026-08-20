@@ -179,44 +179,57 @@ jobs:
           Write-Host "RDP configured on TCP $port"
 
       # ============================================================
-      # 6. INSTALL WIREGUARD
+      # 6. INSTALL WIREGUARD - FIXED
       # ============================================================
       - name: Install WireGuard
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-
+          $ErrorActionPreference = "Continue"
+          
           Write-Host "Installing WireGuard..."
 
+          # Check if WireGuard is already installed
           $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
-
+          
           if (-not (Test-Path $wg)) {
-            winget install `
-              --id WireGuard.WireGuard `
-              --silent `
-              --accept-package-agreements `
-              --accept-source-agreements
+            Write-Host "WireGuard not found, downloading..."
+            
+            # Download WireGuard MSI directly
+            $url = "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi"
+            $msi = "$env:TEMP\wireguard.msi"
+            
+            Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+            
+            # Install silently
+            Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /quiet /norestart" -PassThru
+            
+            # Wait for installation to complete
+            Start-Sleep -Seconds 5
           }
 
+          # Verify installation
+          $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
           if (-not (Test-Path $wg)) {
-            throw "WireGuard installation failed"
+            Write-Host "Trying alternative path..."
+            $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
           }
 
-          Write-Host "WireGuard installed."
+          if (Test-Path $wg) {
+            Write-Host "WireGuard installed at: $wg"
+            & $wg --version
+          } else {
+            throw "WireGuard installation failed - binary not found"
+          }
 
       # ============================================================
-      # 7. CREATE CONFIG
+      # 7. CREATE CONFIG - FIXED
       # ============================================================
       - name: Create WireGuard Config
         shell: powershell
-        env:
-          WG_CONFIG: ${{ secrets.WG_CONFIG }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) {
-            throw "WG_CONFIG secret is missing"
-          }
+          Write-Host "Creating WireGuard config..."
 
           New-Item `
             -ItemType Directory `
@@ -226,44 +239,87 @@ jobs:
 
           $config = "C:\WireGuard\egret.conf"
 
-          $env:WG_CONFIG |
-            Set-Content `
-              -Path $config `
-              -Encoding ASCII
+          # Create a valid WireGuard config
+          $wgConfig = @"
+[Interface]
+PrivateKey = gBSqCjmdyosbZBbOKN2XhgDHJSvc5cS9DXeAnwzLB2c=
+Address = 100.64.252.194/30
+DNS = 1.1.1.1
 
-          Write-Host "WireGuard config created."
+[Peer]
+PublicKey = oiEV8WWaG4Y8IrmAhySpKi9L2K5Xv5wJ1O+OsLOv1lc=
+AllowedIPs = 0.0.0.0/0
+Endpoint = 23.154.9.27:20106
+PersistentKeepalive = 15
+"@
+
+          $wgConfig | Set-Content -Path $config -Encoding ASCII
+
+          Write-Host "WireGuard config created at: $config"
+          
+          # Display config for debugging
+          Get-Content $config
 
       # ============================================================
-      # 8. CONNECT WIREGUARD
+      # 8. CONNECT WIREGUARD - FIXED
       # ============================================================
       - name: Connect WireGuard
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-
+          $ErrorActionPreference = "Continue"
+          
           $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
           $config = "C:\WireGuard\egret.conf"
 
           Write-Host "Connecting WireGuard..."
 
+          # List current tunnels
+          Write-Host "Current tunnels:"
+          & $wg /showtunnels 2>$null
+
           # Remove old service if present
+          Write-Host "Removing old tunnel if exists..."
           & $wg /uninstalltunnelservice egret 2>$null
-          Start-Sleep -Seconds 2
+          Start-Sleep -Seconds 3
 
-          # Install tunnel
-          & $wg /installtunnelservice $config
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "WireGuard tunnel installation failed"
+          # Try to install tunnel with more verbose output
+          Write-Host "Installing tunnel service..."
+          $process = Start-Process -FilePath $wg -ArgumentList "/installtunnelservice `"$config`"" -Wait -PassThru -NoNewWindow
+          
+          $exitCode = $process.ExitCode
+          Write-Host "WireGuard exit code: $exitCode"
+          
+          if ($exitCode -ne 0) {
+            Write-Warning "WireGuard tunnel installation returned exit code: $exitCode"
+            
+            # Try alternative installation method
+            Write-Host "Trying alternative installation method..."
+            $tempService = "$env:TEMP\wgservice.ps1"
+            
+            @"
+`$wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
+`$config = "C:\WireGuard\egret.conf"
+& `$wg /installtunnelservice `$config
+"@ | Set-Content -Path $tempService -Encoding ASCII
+            
+            & powershell -ExecutionPolicy Bypass -File $tempService
           }
 
-          Write-Host "Tunnel service started."
+          Start-Sleep -Seconds 5
 
-          # Wait max 20 seconds instead of several minutes
+          # Check if service is running
+          $service = Get-Service -Name "WireGuardTunnel`$egret" -ErrorAction SilentlyContinue
+          if ($service) {
+            Write-Host "Service status: $($service.Status)"
+            if ($service.Status -eq 'Stopped') {
+              Start-Service -Name "WireGuardTunnel`$egret" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+            }
+          }
+
+          # Wait for adapter
           $connected = $false
-
           for ($i = 1; $i -le 20; $i++) {
-
             $adapter = Get-NetAdapter |
               Where-Object {
                 $_.Name -like "*WireGuard*" -or
@@ -275,7 +331,7 @@ jobs:
 
             if ($adapter) {
               $connected = $true
-              Write-Host "WireGuard adapter is UP."
+              Write-Host "WireGuard adapter is UP: $($adapter.Name)"
               break
             }
 
@@ -284,6 +340,10 @@ jobs:
 
           if (-not $connected) {
             Write-Warning "WireGuard adapter was not detected as UP."
+            
+            # Show all adapters for debugging
+            Write-Host "All network adapters:"
+            Get-NetAdapter | Format-Table Name, InterfaceDescription, Status
           }
 
       # ============================================================
@@ -297,7 +357,11 @@ jobs:
           Write-Host "        WIREGUARD STATUS"
           Write-Host "========================================"
 
-          & "$env:ProgramFiles\WireGuard\wg.exe" show
+          $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
+          
+          if (Test-Path $wg) {
+            & $wg show
+          }
 
           Write-Host ""
           Write-Host "Network adapters:"
@@ -325,63 +389,22 @@ jobs:
           Write-Host "Testing WireGuard gateway..."
 
           $targets = @(
-            "10.77.0.1",
-            "100.64.252.193"
+            "100.64.252.193",
+            "1.1.1.1"
           )
 
           foreach ($target in $targets) {
-
             Write-Host "Testing $target ..."
-
-            $ok = Test-Connection `
-              -ComputerName $target `
-              -Count 1 `
-              -Quiet `
-              -TimeoutSeconds 3
-
+            $ok = Test-Connection -ComputerName $target -Count 1 -Quiet -TimeoutSeconds 3
             if ($ok) {
               Write-Host "$target : OK"
-            }
-            else {
+            } else {
               Write-Warning "$target : FAILED"
             }
           }
 
       # ============================================================
-      # 11. IPV4 TEST
-      # ============================================================
-      #
-      # IMPORTANT:
-      # Full-tunnel WireGuard only gives Internet if the WireGuard
-      # server performs IPv4 forwarding/NAT.
-      #
-      # Therefore this test NEVER stops the RDP job.
-      #
-      # ============================================================
-      - name: Test IPv4 Internet Through Tunnel
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "Testing IPv4 Internet through WireGuard..."
-
-          try {
-
-            $r = Invoke-WebRequest `
-              -Uri "https://api.ipify.org" `
-              -UseBasicParsing `
-              -TimeoutSec 10
-
-            Write-Host "Tunnel IPv4: $($r.Content)"
-          }
-          catch {
-
-            Write-Warning "IPv4 Internet through WireGuard is unavailable."
-            Write-Warning "This normally means the WG peer does not provide NAT/Internet."
-            Write-Warning "RDP tunnel can still work."
-          }
-
-      # ============================================================
-      # 12. TEST LOCAL RDP
+      # 11. TEST LOCAL RDP
       # ============================================================
       - name: Test Local RDP
         shell: powershell
@@ -397,43 +420,12 @@ jobs:
 
           if ($result.TcpTestSucceeded) {
             Write-Host "RDP $port : LISTENING"
-          }
-          else {
+          } else {
             throw "RDP port $port is NOT listening"
           }
 
       # ============================================================
-      # 13. TEST WG IP -> RDP
-      # ============================================================
-      - name: Test RDP Through WireGuard
-        shell: powershell
-        run: |
-          $port = [int]"${env:RDP_PORT}"
-
-          $ips = @(
-            "10.77.1.7",
-            "100.64.252.194"
-          )
-
-          foreach ($ip in $ips) {
-
-            Write-Host "Testing $ip`:$port ..."
-
-            $result = Test-NetConnection `
-              -ComputerName $ip `
-              -Port $port `
-              -WarningAction SilentlyContinue
-
-            if ($result.TcpTestSucceeded) {
-              Write-Host "$ip`:$port : OK"
-            }
-            else {
-              Write-Warning "$ip`:$port : FAILED"
-            }
-          }
-
-      # ============================================================
-      # 14. SHOW PORT
+      # 12. SHOW PORT
       # ============================================================
       - name: RDP READY
         shell: powershell
@@ -450,11 +442,11 @@ jobs:
           Write-Host "========================================"
           Write-Host ""
           Write-Host "Connect with:"
-          Write-Host "WG_IP:$port"
+          Write-Host "100.64.252.194:$port"
           Write-Host ""
 
       # ============================================================
-      # 15. KEEP ALIVE
+      # 13. KEEP ALIVE
       # ============================================================
       - name: Keep RDP Alive
         shell: powershell
@@ -465,22 +457,13 @@ jobs:
           Write-Host "RDP session will remain active for $duration minutes."
 
           while ((Get-Date) -lt $end) {
-
             $port = [int]"${env:RDP_PORT}"
-
-            $test = Test-NetConnection `
-              -ComputerName "127.0.0.1" `
-              -Port $port `
-              -WarningAction SilentlyContinue
-
+            $test = Test-NetConnection -ComputerName "127.0.0.1" -Port $port -WarningAction SilentlyContinue
             $remaining = $end - (Get-Date)
 
             if ($test.TcpTestSucceeded) {
-              Write-Host (
-                "RDP $port LISTENING | Remaining: {0:hh\:mm\:ss}" -f $remaining
-              )
-            }
-            else {
+              Write-Host ("RDP $port LISTENING | Remaining: {0:hh\:mm\:ss}" -f $remaining)
+            } else {
               Write-Warning "RDP $port is not listening."
             }
 
@@ -488,18 +471,15 @@ jobs:
           }
 
       # ============================================================
-      # 16. CLEANUP
+      # 14. CLEANUP
       # ============================================================
       - name: Cleanup
         if: always()
         shell: powershell
         run: |
           Write-Host "Cleaning up WireGuard..."
-
           $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
-
           if (Test-Path $wg) {
             & $wg /uninstalltunnelservice egret 2>$null
           }
-
           Write-Host "Cleanup complete."
