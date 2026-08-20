@@ -35,25 +35,24 @@ jobs:
     timeout-minutes: 340
 
     steps:
-      # ===== BƯỚC 1: CẤU HÌNH RDP =====
+      # ===== STEP 1: SETUP RDP =====
       - name: Setup RDP
         shell: powershell
         env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}   # lấy từ secret nếu có
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
           $pass = $env:RDP_PASSWORD
 
-          # Nếu không có secret, tự tạo mật khẩu ngẫu nhiên và in ra
           if ([string]::IsNullOrWhiteSpace($pass)) {
             $pass = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | ForEach-Object { [char]$_ })
-            Write-Host "⚠️  RDP_PASSWORD secret not set. Using random password: $pass"
-            Write-Host "🔑 Please save this password now! (It will not be shown again)"
+            Write-Host "WARNING: RDP_PASSWORD secret not set. Using random password: $pass"
+            Write-Host "IMPORTANT: Save this password now! It will not be shown again."
           }
 
           Write-Host "Configuring RDP on port $port..."
 
-          # Enable RDP + NLA + port
+          # Enable RDP + NLA + set port
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "PortNumber" -Value $port -Force
@@ -62,7 +61,7 @@ jobs:
           netsh advfirewall firewall delete rule name="RDP-EGE" 2>$null
           netsh advfirewall firewall add rule name="RDP-EGE" dir=in action=allow protocol=TCP localport=$port profile=any
 
-          # Tạo user admin
+          # Create user 'admin'
           $secure = ConvertTo-SecureString $pass -AsPlainText -Force
           $old = Get-LocalUser -Name "admin" -ErrorAction SilentlyContinue
           if ($old) { Remove-LocalUser -Name "admin" -ErrorAction SilentlyContinue }
@@ -71,11 +70,11 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "admin" -ErrorAction SilentlyContinue
           Enable-LocalUser -Name "admin"
 
-          # Restart RDP
+          # Restart RDP service
           Restart-Service -Name "TermService" -Force
           Start-Sleep -Seconds 3
 
-          # Kiểm tra
+          # Quick verification
           $svc = Get-Service -Name "TermService"
           if ($svc.Status -ne "Running") { throw "TermService not running" }
           $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -83,15 +82,14 @@ jobs:
 
           Write-Host "RDP ready on port $port"
 
-      # ===== BƯỚC 2: KẾT NỐI WIREGUARD RDP NETWORK =====
+      # ===== STEP 2: CONNECT WIREGUARD RDP NETWORK =====
       - name: Connect WireGuard RDP
         shell: powershell
         env:
-          WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}   # Config WireGuard của bạn (chứa PrivateKey)
+          WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) { throw "WIREGUARD_CONFIG secret is missing" }
 
-          # Cài WireGuard nếu chưa có
           $wgExe = "$env:ProgramFiles\WireGuard\wireguard.exe"
           if (-not (Test-Path $wgExe)) {
             Write-Host "Installing WireGuard..."
@@ -99,16 +97,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "WireGuard install failed" }
           }
 
-          # Tạo file config
           $cfg = "$env:TEMP\rdp-wg.conf"
           [System.IO.File]::WriteAllText($cfg, $env:WG_CONFIG, [System.Text.UTF8Encoding]::new($false))
 
-          # Cài tunnel service
           & $wgExe /installtunnelservice $cfg
           Start-Sleep -Seconds 5
           Write-Host "WireGuard RDP tunnel started"
 
-      # ===== BƯỚC 3: THÔNG BÁO =====
+      # ===== STEP 3: DISPLAY CONNECTION INFO =====
       - name: RDP Ready
         shell: powershell
         run: |
@@ -118,30 +114,31 @@ jobs:
           Write-Host "========================================"
           Write-Host "Username : admin"
           Write-Host "Port     : ${{ github.event.inputs.rdp_port }}/TCP"
-          Write-Host "Network  : WireGuard RDP (tunnel riêng)"
+          Write-Host "Network  : WireGuard RDP (dedicated tunnel)"
           Write-Host "Public IP: HIDDEN"
           Write-Host "========================================"
+          Write-Host ""
 
-      # ===== BƯỚC 4: KEEP ALIVE =====
+      # ===== STEP 4: KEEP ALIVE (optimized) =====
       - name: Keep RDP Alive
         shell: powershell
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
-          $totalMin = @{ "1h"=60; "3h"=180; "5h40m"=340 }[${{ github.event.inputs.duration }}]
+          $totalMin = @{ "1h"=60; "3h"=180; "5h40m"=340 }["${{ github.event.inputs.duration }}"]
           $end = (Get-Date).AddMinutes($totalMin)
 
           Write-Host "Keeping RDP alive for $totalMin minutes..."
           while ((Get-Date) -lt $end) {
             $svc = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
             if ($svc.Status -ne "Running") {
-              Write-Host "Restarting TermService..."
-              Start-Service "TermService" -ErrorAction SilentlyContinue
+              Write-Host "TermService stopped, restarting..."
+              Start-Service -Name "TermService" -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 3
             }
             $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
             if (-not $listener) {
-              Write-Host "RDP port lost, restarting..."
-              Restart-Service "TermService" -Force -ErrorAction SilentlyContinue
+              Write-Host "RDP port lost, restarting service..."
+              Restart-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 3
             }
             $remain = $end - (Get-Date)
@@ -149,7 +146,7 @@ jobs:
             Start-Sleep -Seconds 60
           }
 
-      # ===== BƯỚC 5: DỌN DẸP =====
+      # ===== STEP 5: CLEANUP =====
       - name: Cleanup
         if: always()
         shell: powershell
@@ -158,4 +155,4 @@ jobs:
           Get-Service "WireGuardTunnel*" | Stop-Service -Force -ErrorAction SilentlyContinue
           netsh advfirewall firewall delete rule name="RDP-EGE" 2>$null
           Disable-LocalUser -Name "admin" -ErrorAction SilentlyContinue
-          Write-Host "Cleanup done."
+          Write-Host "Cleanup completed."
