@@ -35,7 +35,6 @@ jobs:
     timeout-minutes: 340
 
     steps:
-      # ===== STEP 1: SETUP RDP =====
       - name: Setup RDP
         shell: powershell
         env:
@@ -51,17 +50,12 @@ jobs:
           }
 
           Write-Host "Configuring RDP on port $port..."
-
-          # Enable RDP + NLA + set port
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "PortNumber" -Value $port -Force
-
-          # Firewall
           netsh advfirewall firewall delete rule name="RDP-EGE" 2>$null
           netsh advfirewall firewall add rule name="RDP-EGE" dir=in action=allow protocol=TCP localport=$port profile=any
 
-          # Create user 'admin'
           $secure = ConvertTo-SecureString $pass -AsPlainText -Force
           $old = Get-LocalUser -Name "admin" -ErrorAction SilentlyContinue
           if ($old) { Remove-LocalUser -Name "admin" -ErrorAction SilentlyContinue }
@@ -69,42 +63,58 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "admin" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "admin" -ErrorAction SilentlyContinue
           Enable-LocalUser -Name "admin"
-
-          # Restart RDP service
           Restart-Service -Name "TermService" -Force
           Start-Sleep -Seconds 3
 
-          # Quick verification
           $svc = Get-Service -Name "TermService"
           if ($svc.Status -ne "Running") { throw "TermService not running" }
           $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
           if (-not $listener) { throw "RDP not listening on port $port" }
-
           Write-Host "RDP ready on port $port"
 
-      # ===== STEP 2: CONNECT WIREGUARD RDP NETWORK =====
       - name: Connect WireGuard RDP
         shell: powershell
         env:
           WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) { throw "WIREGUARD_CONFIG secret is missing" }
-
           $wgExe = "$env:ProgramFiles\WireGuard\wireguard.exe"
           if (-not (Test-Path $wgExe)) {
             Write-Host "Installing WireGuard..."
             winget install --id WireGuard.WireGuard --exact --silent --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -ne 0) { throw "WireGuard install failed" }
           }
-
+          $config = $env:WG_CONFIG
+          $config = $config -replace 'AllowedIPs = 0\.0\.0\.0/0', 'AllowedIPs = 10.77.1.7/32'
           $cfg = "$env:TEMP\rdp-wg.conf"
-          [System.IO.File]::WriteAllText($cfg, $env:WG_CONFIG, [System.Text.UTF8Encoding]::new($false))
-
+          [System.IO.File]::WriteAllText($cfg, $config, [System.Text.UTF8Encoding]::new($false))
           & $wgExe /installtunnelservice $cfg
           Start-Sleep -Seconds 5
-          Write-Host "WireGuard RDP tunnel started"
+          Write-Host "WireGuard RDP tunnel started (only RDP traffic uses tunnel)"
 
-      # ===== STEP 3: DISPLAY CONNECTION INFO =====
+      # ===== BƯỚC KIỂM TRA MẠNG =====
+      - name: Verify Network Routing
+        shell: powershell
+        run: |
+          Write-Host "=== Network Interfaces ==="
+          Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -ne "Loopback" } | Format-Table InterfaceAlias, IPAddress
+
+          Write-Host "=== Default Route ==="
+          Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Format-Table InterfaceAlias, NextHop
+
+          Write-Host "=== Public IP (should NOT be 10.77.1.7) ==="
+          try {
+            $publicIP = (Invoke-WebRequest -Uri "https://ifconfig.me/ip" -UseBasicParsing -TimeoutSec 10).Content.Trim()
+            Write-Host "Public IP: $publicIP"
+            if ($publicIP -eq "10.77.1.7") {
+              Write-Host "WARNING: Public IP is WireGuard IP - all traffic may be going through tunnel!"
+            } else {
+              Write-Host "OK: Public IP is different - normal traffic uses machine's default network."
+            }
+          } catch {
+            Write-Host "Could not fetch public IP: $_"
+          }
+
       - name: RDP Ready
         shell: powershell
         run: |
@@ -117,16 +127,13 @@ jobs:
           Write-Host "Network  : WireGuard RDP (dedicated tunnel)"
           Write-Host "Public IP: HIDDEN"
           Write-Host "========================================"
-          Write-Host ""
 
-      # ===== STEP 4: KEEP ALIVE (optimized) =====
       - name: Keep RDP Alive
         shell: powershell
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
           $totalMin = @{ "1h"=60; "3h"=180; "5h40m"=340 }["${{ github.event.inputs.duration }}"]
           $end = (Get-Date).AddMinutes($totalMin)
-
           Write-Host "Keeping RDP alive for $totalMin minutes..."
           while ((Get-Date) -lt $end) {
             $svc = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
@@ -146,7 +153,6 @@ jobs:
             Start-Sleep -Seconds 60
           }
 
-      # ===== STEP 5: CLEANUP =====
       - name: Cleanup
         if: always()
         shell: powershell
