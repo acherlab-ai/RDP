@@ -192,7 +192,7 @@ jobs:
           Write-Host "Config created."
 
       # ========================================
-      # CONNECT EGRET
+      # CONNECT EGRET (IMPROVED)
       # ========================================
       - name: Connect Egret
         shell: powershell
@@ -204,76 +204,89 @@ jobs:
 
           Write-Host "Installing Egret tunnel..."
 
-          $old = Get-Service `
-            -Name $serviceName `
-            -ErrorAction SilentlyContinue
-
+          # Remove old tunnel if exists
+          $old = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
           if ($old) {
               Write-Host "Removing old tunnel..."
-
-              & $wg `
-                /uninstalltunnelservice `
-                $name `
-                2>&1
-
+              & $wg /uninstalltunnelservice $name 2>&1 | Out-Null
               Start-Sleep -Seconds 3
           }
 
-          $p = Start-Process `
-            -FilePath $wg `
-            -ArgumentList "/installtunnelservice `"$config`"" `
-            -PassThru `
-            -WindowStyle Hidden
-
+          # Install tunnel service
+          $p = Start-Process -FilePath $wg -ArgumentList "/installtunnelservice `"$config`"" -PassThru -WindowStyle Hidden
           Write-Host "Installer PID: $($p.Id)"
 
           if (-not $p.WaitForExit(30000)) {
               Write-Host "Installer timed out."
-
-              Stop-Process `
-                -Id $p.Id `
-                -Force `
-                -ErrorAction SilentlyContinue
-
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
               exit 1
           }
 
           Write-Host "Installer exit code: $($p.ExitCode)"
-
           if ($p.ExitCode -ne 0) {
               Write-Host "Installation failed."
               exit 1
           }
 
-          Write-Host "Waiting for service..."
-
-          $running = $false
-
-          for ($i = 1; $i -le 30; $i++) {
-
-              $svc = Get-Service `
-                -Name $serviceName `
-                -ErrorAction SilentlyContinue
-
-              if ($svc) {
-
-                  Write-Host `
-                    "Attempt $i/30 - Status: $($svc.Status)"
-
-                  if ($svc.Status -eq "Running") {
-                      $running = $true
-                      break
-                  }
-
-                  if ($svc.Status -eq "Stopped") {
-                      break
-                  }
-              }
-              else {
-                  Write-Host "Service not found."
-              }
-
+          # Wait for service to be created
+          Write-Host "Waiting for service to be created..."
+          $svc = $null
+          for ($i = 1; $i -le 15; $i++) {
+              $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if ($svc) { break }
+              Write-Host "Attempt $i/15 - Service not found yet."
               Start-Sleep -Seconds 2
+          }
+
+          if (-not $svc) {
+              Write-Host "Service was not created after installation."
+              Get-Service | Where-Object { $_.Name -like "WireGuard*" } | Format-Table -AutoSize
+              exit 1
+          }
+
+          Write-Host "Service found. Current status: $($svc.Status)"
+
+          # If service is not running, try to start it
+          if ($svc.Status -ne "Running") {
+              Write-Host "Service is not running. Attempting to start..."
+              try {
+                  Start-Service -Name $serviceName -ErrorAction Stop
+                  Write-Host "Start-Service command completed."
+              }
+              catch {
+                  Write-Host "Start-Service failed: $($_.Exception.Message)"
+              }
+          }
+
+          # Wait for service to become Running
+          Write-Host "Waiting for service to become Running..."
+          $running = $false
+          $maxAttempts = 60
+          $sleepSeconds = 5
+
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+              $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if (-not $svc) {
+                  Write-Host "Attempt $i/$maxAttempts - Service disappeared."
+                  break
+              }
+
+              Write-Host "Attempt $i/$maxAttempts - Status: $($svc.Status)"
+
+              if ($svc.Status -eq "Running") {
+                  $running = $true
+                  break
+              }
+
+              # If stuck in StartPending too long (after 10 attempts), try restart
+              if ($i -eq 10 -and $svc.Status -eq "StartPending") {
+                  Write-Host "Service has been in StartPending for too long. Attempting restart..."
+                  Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+                  Start-Sleep -Seconds 3
+                  Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+              }
+
+              Start-Sleep -Seconds $sleepSeconds
           }
 
           if (-not $running) {
@@ -281,69 +294,16 @@ jobs:
               Write-Host "========================================"
               Write-Host "       WIREGUARD START FAILED"
               Write-Host "========================================"
-
-              Write-Host ""
-              Write-Host "Tunnel service:"
-              Get-Service `
-                -Name $serviceName `
-                -ErrorAction SilentlyContinue |
-                Format-List *
-
-              Write-Host ""
-              Write-Host "WireGuard services:"
-              Get-Service |
-                Where-Object {
-                  $_.Name -like "WireGuard*"
-                } |
-                Select-Object Name, Status, StartType |
-                Format-Table -AutoSize
-
-              Write-Host ""
+              Write-Host "Service details:"
+              if ($svc) { $svc | Format-List * }
+              Write-Host "All WireGuard services:"
+              Get-Service | Where-Object { $_.Name -like "WireGuard*" } | Select-Object Name, Status, StartType | Format-Table -AutoSize
               Write-Host "WireGuard adapters:"
-              Get-NetAdapter |
-                Where-Object {
-                  $_.InterfaceDescription -like "*WireGuard*"
-                } |
-                Select-Object `
-                  Name,
-                  InterfaceDescription,
-                  Status,
-                  LinkSpeed |
-                Format-Table -AutoSize
-
-              Write-Host ""
+              Get-NetAdapter | Where-Object { $_.InterfaceDescription -like "*WireGuard*" } | Select-Object Name, InterfaceDescription, Status, LinkSpeed | Format-Table -AutoSize
               Write-Host "IPv4 addresses:"
-              Get-NetIPAddress `
-                -AddressFamily IPv4 `
-                -ErrorAction SilentlyContinue |
-                Select-Object `
-                  IPAddress,
-                  PrefixLength,
-                  InterfaceAlias |
-                Format-Table -AutoSize
-
-              Write-Host ""
-              Write-Host "Relevant routes:"
-              Get-NetRoute `
-                -AddressFamily IPv4 `
-                -ErrorAction SilentlyContinue |
-                Where-Object {
-                  $_.DestinationPrefix -eq "0.0.0.0/0" -or
-                  $_.DestinationPrefix -eq "0.0.0.0/1" -or
-                  $_.DestinationPrefix -eq "128.0.0.0/1" -or
-                  $_.DestinationPrefix -eq "100.64.252.192/30"
-                } |
-                Select-Object `
-                  DestinationPrefix,
-                  NextHop,
-                  InterfaceAlias,
-                  RouteMetric |
-                Format-Table -AutoSize
-
-              Write-Host ""
+              Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
               Write-Host "WireGuard diagnostic log:"
               & $wg /dumplog 2>&1
-
               exit 1
           }
 
@@ -357,28 +317,17 @@ jobs:
         run: |
           Write-Host "Checking 100.64.252.194..."
 
-          $ip = Get-NetIPAddress `
-            -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.IPAddress -eq "100.64.252.194"
-            }
+          $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -eq "100.64.252.194" }
 
           if ($ip) {
               Write-Host "Egret address detected."
-              $ip |
-                Select-Object IPAddress, PrefixLength, InterfaceAlias |
-                Format-Table -AutoSize
+              $ip | Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
           }
           else {
               Write-Host "Egret address NOT detected."
-
-              Get-NetIPAddress `
-                -AddressFamily IPv4 `
-                -ErrorAction SilentlyContinue |
-                Select-Object IPAddress, PrefixLength, InterfaceAlias |
-                Format-Table -AutoSize
-
+              Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                  Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
               exit 1
           }
 
