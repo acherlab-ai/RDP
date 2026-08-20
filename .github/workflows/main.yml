@@ -42,13 +42,11 @@ jobs:
         run: |
           $port = [int]"${{ github.event.inputs.rdp_port }}"
           $pass = $env:RDP_PASSWORD
-
           if ([string]::IsNullOrWhiteSpace($pass)) {
             $pass = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | ForEach-Object { [char]$_ })
-            Write-Host "WARNING: RDP_PASSWORD secret not set. Using random password: $pass"
-            Write-Host "IMPORTANT: Save this password now! It will not be shown again."
+            Write-Host "WARNING: RDP_PASSWORD not set. Using random password: $pass"
+            Write-Host "IMPORTANT: Save this password now!"
           }
-
           Write-Host "Configuring RDP on port $port..."
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1 -Force
@@ -65,7 +63,6 @@ jobs:
           Enable-LocalUser -Name "admin"
           Restart-Service -Name "TermService" -Force
           Start-Sleep -Seconds 3
-
           $svc = Get-Service -Name "TermService"
           if ($svc.Status -ne "Running") { throw "TermService not running" }
           $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -77,9 +74,8 @@ jobs:
         env:
           WG_CONFIG: ${{ secrets.WIREGUARD_CONFIG }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) { throw "WIREGUARD_CONFIG secret is missing" }
+          if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) { throw "WIREGUARD_CONFIG secret missing" }
 
-          # Cài WireGuard nếu chưa có
           $wgExe = "$env:ProgramFiles\WireGuard\wireguard.exe"
           if (-not (Test-Path $wgExe)) {
             Write-Host "Installing WireGuard..."
@@ -87,70 +83,57 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "WireGuard install failed" }
           }
 
-          # Ghi file config
           $cfg = "$env:TEMP\rdp-wg.conf"
           [System.IO.File]::WriteAllText($cfg, $env:WG_CONFIG, [System.Text.UTF8Encoding]::new($false))
 
-          # Cài tunnel service
           Write-Host "Installing WireGuard tunnel service..."
           & $wgExe /installtunnelservice $cfg
           if ($LASTEXITCODE -ne 0) { throw "Failed to install tunnel service" }
 
-          # Chờ interface xuất hiện
-          Write-Host "Waiting for WireGuard interface to appear..."
+          Write-Host "Waiting for WireGuard interface..."
           Start-Sleep -Seconds 10
 
-          # Kiểm tra config có Table = off không
           $configContent = Get-Content $cfg -Raw
           if ($configContent -match "Table\s*=\s*off") {
-            Write-Host "Table = off detected. Adding manual routes..."
+            Write-Host "Table = off. Adding manual routes via PowerShell..."
 
-            # Lấy IPv4 address từ config
+            # Lấy IPv4 address (loại bỏ /subnet)
             $ipv4 = ($configContent | Select-String -Pattern "Address\s*=\s*([\d\.]+/\d+)").Matches.Groups[1].Value
-            if (-not $ipv4) { throw "No IPv4 address found in config" }
+            if (-not $ipv4) { throw "No IPv4 address" }
+            $ipv4Only = $ipv4 -replace "/\d+", ""
 
-            # Tìm WireGuard interface
-            $wgInterface = Get-NetAdapter | Where-Object { $_.Name -match "WireGuard|wg" -or $_.InterfaceDescription -match "WireGuard" } | Select-Object -First 1
-            if (-not $wgInterface) {
-              # Thử tìm theo IP
-              $ipOnly = $ipv4 -replace "/\d+", ""
-              $iface = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq $ipOnly } | Select-Object -First 1
-              if ($iface) {
-                $wgInterface = Get-NetAdapter -Name $iface.InterfaceAlias -ErrorAction SilentlyContinue
-              }
+            # Tìm interface WireGuard
+            $wgAdapter = Get-NetAdapter | Where-Object { $_.Name -match "WireGuard|wg" -or $_.InterfaceDescription -match "WireGuard" } | Select-Object -First 1
+            if (-not $wgAdapter) {
+              $iface = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq $ipv4Only } | Select-Object -First 1
+              if ($iface) { $wgAdapter = Get-NetAdapter -Name $iface.InterfaceAlias -ErrorAction SilentlyContinue }
             }
-
-            if (-not $wgInterface) {
-              Write-Host "ERROR: WireGuard interface not found."
-              Write-Host "Listing all adapters:"
+            if (-not $wgAdapter) {
+              Write-Host "Available adapters:"
               Get-NetAdapter | Format-Table Name, InterfaceDescription, ifIndex, Status
               throw "WireGuard interface not found"
             }
+            $ifIndex = $wgAdapter.ifIndex
+            Write-Host "Found WireGuard interface: $($wgAdapter.Name) (ifIndex=$ifIndex)"
 
-            $ifIndex = $wgInterface.ifIndex
-            Write-Host "Found WireGuard interface: $($wgInterface.Name) (ifIndex=$ifIndex)"
+            # Xóa route cũ (nếu có) và thêm route mới với metric cực thấp
+            Remove-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue
+            New-NetRoute -DestinationPrefix "0.0.0.0/0" -NextHop $ipv4Only -InterfaceIndex $ifIndex -RouteMetric 1 -ErrorAction Stop
+            Write-Host "Default route added via $ipv4Only with metric 1."
 
-            # Thêm route mặc định với metric thấp
-            route add 0.0.0.0 mask 0.0.0.0 $ipv4 metric 5 if $ifIndex
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "WARNING: Failed to add default route (exit code $LASTEXITCODE). Traffic may not go through tunnel."
-            } else {
-              Write-Host "Default route added successfully."
-            }
-
-            # Thêm IPv6 nếu có
+            # IPv6 nếu có
             $ipv6Match = $configContent | Select-String -Pattern "Address\s*=\s*([a-fA-F0-9:]+/\d+)" -AllMatches
             if ($ipv6Match) {
-              $ipv6 = $ipv6Match.Matches[1].Groups[1].Value  # Lấy cái thứ hai (sau IPv4)
+              $ipv6 = $ipv6Match.Matches[0].Groups[1].Value
               if ($ipv6) {
-                route add ::/0 $ipv6 metric 5 if $ifIndex
+                $ipv6Only = $ipv6 -replace "/\d+", ""
+                Remove-NetRoute -DestinationPrefix "::/0" -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue
+                New-NetRoute -DestinationPrefix "::/0" -NextHop $ipv6Only -InterfaceIndex $ifIndex -RouteMetric 1 -ErrorAction SilentlyContinue
               }
             }
-
           } else {
-            Write-Host "WireGuard will add routes automatically (Table not off)"
+            Write-Host "WireGuard will add routes automatically."
           }
-
           Write-Host "WireGuard tunnel started."
 
       - name: Verify Network Routing
@@ -158,10 +141,8 @@ jobs:
         run: |
           Write-Host "=== Network Interfaces ==="
           Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -ne "Loopback" } | Format-Table InterfaceAlias, IPAddress
-
           Write-Host "=== Default Route ==="
           Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Format-Table InterfaceAlias, NextHop, Metric
-
           Write-Host "=== Public IP ==="
           try {
             $publicIP = (Invoke-WebRequest -Uri "https://ifconfig.me/ip" -UseBasicParsing -TimeoutSec 10).Content.Trim()
@@ -188,7 +169,6 @@ jobs:
           $port = [int]"${{ github.event.inputs.rdp_port }}"
           $totalMin = @{ "1h"=60; "3h"=180; "5h40m"=340 }["${{ github.event.inputs.duration }}"]
           $end = (Get-Date).AddMinutes($totalMin)
-
           Write-Host "Keeping RDP alive for $totalMin minutes..."
           while ((Get-Date) -lt $end) {
             $svc = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
