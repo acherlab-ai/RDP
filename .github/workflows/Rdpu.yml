@@ -13,34 +13,48 @@ on:
           - "3h"
           - "5h40m"
 
+      rdp_port:
+        description: "RDP Port"
+        required: false
+        default: "3389"
+        type: choice
+        options:
+          - "3389"
+          - "3340"
+          - "3341"
+          - "3350"
+          - "3360"
+          - "3370"
+          - "3390"
+          - "3400"
+          - "3410"
+          - "3420"
+
 jobs:
   RDP:
     runs-on: windows-latest
-    timeout-minutes: 350
+    timeout-minutes: 340
 
     steps:
 
-      # ========================================
-      # START
-      # ========================================
       - name: Start RDP
         shell: powershell
         run: |
-          Write-Host ""
           Write-Host "========================================"
-          Write-Host "        RDP PREMIUM EGE"
+          Write-Host "          RDP PREMIUM EGE"
           Write-Host "========================================"
-          Write-Host "Duration: ${{ github.event.inputs.duration }}"
-          Write-Host "Network: Egret WireGuard"
-          Write-Host ""
+          Write-Host "Duration : ${{ github.event.inputs.duration }}"
+          Write-Host "RDP Port : ${{ github.event.inputs.rdp_port }}"
+          Write-Host "Network  : Egret WireGuard"
+          Write-Host "Public IP: HIDDEN"
+          Write-Host "========================================"
 
-      # ========================================
-      # ENABLE RDP
-      # ========================================
       - name: Enable RDP
         shell: powershell
         run: |
-          Write-Host "Enabling Remote Desktop..."
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
+
+          Write-Host "Configuring RDP on port ${port}..."
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -54,6 +68,12 @@ jobs:
             -Value 1 `
             -Force
 
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "PortNumber" `
+            -Value $port `
+            -Force
+
           Set-Service `
             -Name "TermService" `
             -StartupType Automatic
@@ -62,29 +82,29 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "RDP enabled."
+          Write-Host "RDP configured on TCP ${port}"
 
-      # ========================================
-      # FIREWALL
-      # ========================================
       - name: Open RDP Port
         shell: powershell
         run: |
-          Write-Host "Opening TCP 3389..."
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
+
+          Write-Host "Opening firewall TCP ${port}..."
+
+          netsh advfirewall firewall delete rule `
+            name="RDP-EGE" `
+            2>$null
 
           netsh advfirewall firewall add rule `
-            name="RDP-EGE-3389" `
+            name="RDP-EGE" `
             dir=in `
             action=allow `
             protocol=TCP `
-            localport=3389 `
+            localport=$port `
             profile=any
 
-          Write-Host "TCP 3389 opened."
+          Write-Host "Firewall TCP ${port}: OK"
 
-      # ========================================
-      # CREATE RDP USER
-      # ========================================
       - name: Create RDP User
         shell: powershell
         env:
@@ -94,7 +114,7 @@ jobs:
           $password = $env:RDP_PASSWORD
 
           if ([string]::IsNullOrWhiteSpace($password)) {
-              Write-Host "RDP_PASSWORD secret is missing."
+              Write-Host "ERROR: RDP_PASSWORD secret is missing."
               exit 1
           }
 
@@ -135,21 +155,74 @@ jobs:
           Enable-LocalUser `
             -Name $username
 
-          Write-Host "User created: admin"
+          Write-Host "User admin created successfully."
 
-      # ========================================
-      # INSTALL WIREGUARD
-      # ========================================
+      - name: Restart RDP
+        shell: powershell
+        run: |
+          Write-Host "Restarting TermService..."
+
+          Restart-Service `
+            -Name "TermService" `
+            -Force
+
+          Start-Sleep -Seconds 5
+
+          $service = Get-Service `
+            -Name "TermService"
+
+          Write-Host "TermService: $($service.Status)"
+
+          if ($service.Status -ne "Running") {
+              Write-Host "ERROR: TermService failed."
+              exit 1
+          }
+
+      - name: Check RDP
+        shell: powershell
+        run: |
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
+
+          Write-Host "Checking RDP..."
+
+          $user = Get-LocalUser `
+            -Name "admin" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $user) {
+              Write-Host "ERROR: admin user not found."
+              exit 1
+          }
+
+          Write-Host "User: OK"
+
+          $service = Get-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          if ($service.Status -ne "Running") {
+              Write-Host "ERROR: TermService is not running."
+              exit 1
+          }
+
+          Write-Host "TermService: OK"
+
+          $listen = Get-NetTCPConnection `
+            -LocalPort $port `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($listen) {
+              Write-Host "TCP ${port}: LISTENING"
+          }
+          else {
+              Write-Host "TCP ${port}: NOT LISTENING"
+              exit 1
+          }
+
       - name: Install WireGuard
         shell: powershell
         run: |
-          $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
-
-          if (Test-Path $wg) {
-              Write-Host "WireGuard already installed."
-              exit 0
-          }
-
           Write-Host "Installing WireGuard..."
 
           winget install `
@@ -159,397 +232,261 @@ jobs:
             --accept-package-agreements `
             --accept-source-agreements
 
-          Start-Sleep -Seconds 5
-
-          if (-not (Test-Path $wg)) {
+          if ($LASTEXITCODE -ne 0) {
               Write-Host "WireGuard installation failed."
               exit 1
           }
 
           Write-Host "WireGuard installed."
 
-      # ========================================
-      # CREATE EGRET CONFIG
-      # ========================================
       - name: Create Egret Config
         shell: powershell
         env:
           EGRET_CONFIG: ${{ secrets.EGRET_WG_CONFIG }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:EGRET_CONFIG)) {
-              Write-Host "EGRET_WG_CONFIG is missing."
+              Write-Host "ERROR: EGRET_WG_CONFIG secret is missing."
               exit 1
           }
 
-          $path = "$env:TEMP\egret.conf"
+          $configPath = "$env:TEMP\egret.conf"
 
           [System.IO.File]::WriteAllText(
-              $path,
+              $configPath,
               $env:EGRET_CONFIG,
               [System.Text.UTF8Encoding]::new($false)
           )
 
-          Write-Host "Config created."
+          Write-Host "Egret configuration created."
 
-      # ========================================
-      # CONNECT EGRET (IMPROVED)
-      # ========================================
       - name: Connect Egret
         shell: powershell
         run: |
-          $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
+          Write-Host "Connecting to Egret WireGuard..."
+
+          $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
           $config = "$env:TEMP\egret.conf"
-          $name = "egret"
-          $serviceName = "WireGuardTunnel`$egret"
 
-          Write-Host "Installing Egret tunnel..."
-
-          # Remove old tunnel if exists
-          $old = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-          if ($old) {
-              Write-Host "Removing old tunnel..."
-              & $wg /uninstalltunnelservice $name 2>&1 | Out-Null
-              Start-Sleep -Seconds 3
-          }
-
-          # Install tunnel service
-          $p = Start-Process -FilePath $wg -ArgumentList "/installtunnelservice `"$config`"" -PassThru -WindowStyle Hidden
-          Write-Host "Installer PID: $($p.Id)"
-
-          if (-not $p.WaitForExit(30000)) {
-              Write-Host "Installer timed out."
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path $wireguard)) {
+              Write-Host "ERROR: WireGuard executable not found."
               exit 1
           }
 
-          Write-Host "Installer exit code: $($p.ExitCode)"
-          if ($p.ExitCode -ne 0) {
-              Write-Host "Installation failed."
+          if (-not (Test-Path $config)) {
+              Write-Host "ERROR: Egret config not found."
               exit 1
           }
 
-          # Wait for service to be created
-          Write-Host "Waiting for service to be created..."
-          $svc = $null
-          for ($i = 1; $i -le 15; $i++) {
-              $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-              if ($svc) { break }
-              Write-Host "Attempt $i/15 - Service not found yet."
-              Start-Sleep -Seconds 2
-          }
+          & $wireguard /installtunnelservice $config
 
-          if (-not $svc) {
-              Write-Host "Service was not created after installation."
-              Get-Service | Where-Object { $_.Name -like "WireGuard*" } | Format-Table -AutoSize
-              exit 1
-          }
+          Start-Sleep -Seconds 10
 
-          Write-Host "Service found. Current status: $($svc.Status)"
+          Get-Service |
+            Where-Object {
+              $_.Name -like "WireGuardTunnel*"
+            } |
+            Select-Object Name, Status |
+            Format-Table -AutoSize
 
-          # If service is not running, try to start it
-          if ($svc.Status -ne "Running") {
-              Write-Host "Service is not running. Attempting to start..."
-              try {
-                  Start-Service -Name $serviceName -ErrorAction Stop
-                  Write-Host "Start-Service command completed."
-              }
-              catch {
-                  Write-Host "Start-Service failed: $($_.Exception.Message)"
-              }
-          }
+          Write-Host "Egret tunnel initialized."
 
-          # Wait for service to become Running
-          Write-Host "Waiting for service to become Running..."
-          $running = $false
-          $maxAttempts = 60
-          $sleepSeconds = 5
-
-          for ($i = 1; $i -le $maxAttempts; $i++) {
-              $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-              if (-not $svc) {
-                  Write-Host "Attempt $i/$maxAttempts - Service disappeared."
-                  break
-              }
-
-              Write-Host "Attempt $i/$maxAttempts - Status: $($svc.Status)"
-
-              if ($svc.Status -eq "Running") {
-                  $running = $true
-                  break
-              }
-
-              # If stuck in StartPending too long (after 10 attempts), try restart
-              if ($i -eq 10 -and $svc.Status -eq "StartPending") {
-                  Write-Host "Service has been in StartPending for too long. Attempting restart..."
-                  Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-                  Start-Sleep -Seconds 3
-                  Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-              }
-
-              Start-Sleep -Seconds $sleepSeconds
-          }
-
-          if (-not $running) {
-              Write-Host ""
-              Write-Host "========================================"
-              Write-Host "       WIREGUARD START FAILED"
-              Write-Host "========================================"
-              Write-Host "Service details:"
-              if ($svc) { $svc | Format-List * }
-              Write-Host "All WireGuard services:"
-              Get-Service | Where-Object { $_.Name -like "WireGuard*" } | Select-Object Name, Status, StartType | Format-Table -AutoSize
-              Write-Host "WireGuard adapters:"
-              Get-NetAdapter | Where-Object { $_.InterfaceDescription -like "*WireGuard*" } | Select-Object Name, InterfaceDescription, Status, LinkSpeed | Format-Table -AutoSize
-              Write-Host "IPv4 addresses:"
-              Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
-              Write-Host "WireGuard diagnostic log:"
-              & $wg /dumplog 2>&1
-              exit 1
-          }
-
-          Write-Host "WireGuard service is Running."
-
-      # ========================================
-      # VERIFY EGRET ADDRESS
-      # ========================================
-      - name: Verify Egret Address
+      - name: Test Network
         shell: powershell
         run: |
-          Write-Host "Checking 100.64.252.194..."
-
-          $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                Where-Object { $_.IPAddress -eq "100.64.252.194" }
-
-          if ($ip) {
-              Write-Host "Egret address detected."
-              $ip | Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
-          }
-          else {
-              Write-Host "Egret address NOT detected."
-              Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                  Select-Object IPAddress, PrefixLength, InterfaceAlias | Format-Table -AutoSize
-              exit 1
-          }
-
-      # ========================================
-      # TEST DNS
-      # ========================================
-      - name: Test DNS
-        shell: powershell
-        run: |
-          Write-Host "Testing DNS..."
+          Write-Host "Testing network..."
 
           try {
-              Resolve-DnsName `
-                -Name example.com `
-                -Server 1.1.1.1 `
-                -ErrorAction Stop |
-                Where-Object {
-                  $_.Type -eq "A"
-                } |
-                Select-Object Name, IPAddress |
-                Format-Table -AutoSize
+              $response = Invoke-WebRequest `
+                -Uri "https://ifconfig.me/ip" `
+                -TimeoutSec 15 `
+                -UseBasicParsing
 
-              Write-Host "DNS test completed."
+              if ($response.StatusCode -eq 200) {
+                  Write-Host "Internet connection: OK"
+              }
           }
           catch {
-              Write-Host "DNS test failed:"
+              Write-Host "Network test failed."
               Write-Host $_.Exception.Message
           }
 
-      # ========================================
-      # CHECK RDP
-      # ========================================
-      - name: Check RDP
+          Write-Host "Public IP: HIDDEN"
+
+      - name: Verify RDP
         shell: powershell
         run: |
-          Write-Host "Checking RDP..."
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
 
-          $user = Get-LocalUser `
-            -Name "admin" `
-            -ErrorAction SilentlyContinue
-
-          if (-not $user) {
-              Write-Host "RDP user does not exist."
-              exit 1
-          }
+          Write-Host "========================================"
+          Write-Host "          FINAL RDP CHECK"
+          Write-Host "========================================"
 
           $service = Get-Service `
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          if (-not $service) {
-              Write-Host "TermService not found."
+          Write-Host "TermService: $($service.Status)"
+
+          if ($service.Status -ne "Running") {
               exit 1
           }
 
-          if ($service.Status -ne "Running") {
-              Start-Service `
-                -Name "TermService" `
-                -ErrorAction SilentlyContinue
-
-              Start-Sleep -Seconds 3
-          }
-
           $listen = Get-NetTCPConnection `
-            -LocalPort 3389 `
+            -LocalPort $port `
             -State Listen `
             -ErrorAction SilentlyContinue
 
           if ($listen) {
-              Write-Host "TCP 3389 is listening."
+              Write-Host "RDP TCP ${port}: LISTENING"
           }
           else {
-              Write-Host "TCP 3389 is NOT listening."
+              Write-Host "RDP TCP ${port}: NOT LISTENING"
               exit 1
           }
 
-      # ========================================
-      # READY
-      # ========================================
+          $firewall = Get-NetFirewallRule `
+            -DisplayName "RDP-EGE" `
+            -ErrorAction SilentlyContinue
+
+          if ($firewall) {
+              Write-Host "Firewall: OK"
+          }
+          else {
+              Write-Host "Firewall: NOT FOUND"
+              exit 1
+          }
+
       - name: RDP Ready
         shell: powershell
         run: |
+          $port = "${{ github.event.inputs.rdp_port }}"
+
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "           RDP SERVER READY"
+          Write-Host "          RDP SERVER READY"
           Write-Host "========================================"
           Write-Host ""
           Write-Host "Username : admin"
-          Write-Host "Port     : 3389/TCP"
-          Write-Host "WG IP    : 100.64.252.194"
+          Write-Host "Port     : ${port}/TCP"
           Write-Host "Network  : Egret WireGuard"
           Write-Host "Public IP: HIDDEN"
           Write-Host ""
-          Write-Host "RDP service is ready."
-          Write-Host ""
+          Write-Host "RDP is ready."
+          Write-Host "========================================"
 
-      # ========================================
-      # KEEP ALIVE
-      # ========================================
       - name: Keep RDP Alive
         shell: powershell
         run: |
           $duration = "${{ github.event.inputs.duration }}"
+          $port = [int]"${{ github.event.inputs.rdp_port }}"
 
           switch ($duration) {
-              "1h"    { $sessionMinutes = 60 }
-              "3h"    { $sessionMinutes = 180 }
-              "5h40m" { $sessionMinutes = 340 }
-              default { $sessionMinutes = 340 }
+              "1h" {
+                  $totalMinutes = 60
+              }
+
+              "3h" {
+                  $totalMinutes = 180
+              }
+
+              "5h40m" {
+                  $totalMinutes = 340
+              }
+
+              default {
+                  $totalMinutes = 340
+              }
           }
 
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "          RDP SESSION STARTED"
-          Write-Host "========================================"
-          Write-Host ""
+          Write-Host "RDP port: ${port}"
+          Write-Host "Duration: ${totalMinutes} minutes"
 
-          Write-Host "Session duration: $sessionMinutes minutes."
-
-          $endTime = (Get-Date).AddMinutes($sessionMinutes)
+          $endTime = (Get-Date).AddMinutes($totalMinutes)
 
           while ((Get-Date) -lt $endTime) {
 
-              # Check RDP service
               $service = Get-Service `
                 -Name "TermService" `
                 -ErrorAction SilentlyContinue
 
-              if ($service -and $service.Status -ne "Running") {
+              if ($service.Status -ne "Running") {
+
                   Write-Host "TermService stopped. Restarting..."
+
                   Start-Service `
                     -Name "TermService" `
                     -ErrorAction SilentlyContinue
+
+                  Start-Sleep -Seconds 3
               }
 
-              # Check RDP port
               $listen = Get-NetTCPConnection `
-                -LocalPort 3389 `
+                -LocalPort $port `
                 -State Listen `
                 -ErrorAction SilentlyContinue
 
               if (-not $listen) {
-                  Write-Host "RDP 3389 not listening. Restarting..."
+
+                  Write-Host "RDP port ${port} stopped listening."
+
                   Restart-Service `
                     -Name "TermService" `
                     -Force `
                     -ErrorAction SilentlyContinue
+
+                  Start-Sleep -Seconds 3
               }
 
-              # Check WireGuard
-              $wgService = Get-Service `
-                -Name "WireGuardTunnel`$egret" `
-                -ErrorAction SilentlyContinue
-
-              if ($wgService -and $wgService.Status -ne "Running") {
-                  Write-Host "Egret WireGuard stopped. Restarting..."
-                  Start-Service `
-                    -Name "WireGuardTunnel`$egret" `
-                    -ErrorAction SilentlyContinue
-              }
-
-              # Check Egret IP
-              $egretIP = Get-NetIPAddress `
-                -AddressFamily IPv4 `
-                -ErrorAction SilentlyContinue |
-                Where-Object {
-                  $_.IPAddress -eq "100.64.252.194"
-                }
-
-              if (-not $egretIP) {
-                  Write-Host "WARNING: Egret IP not detected."
-              }
-
-              # Show remaining time
               $remaining = $endTime - (Get-Date)
+
               $hours = [math]::Floor($remaining.TotalHours)
               $minutesLeft = $remaining.Minutes
               $secondsLeft = $remaining.Seconds
 
               Write-Host `
-                "RDP active - remaining: ${hours}h ${minutesLeft}m ${secondsLeft}s"
+                "RDP ${port} active - remaining: ${hours}h ${minutesLeft}m ${secondsLeft}s"
 
               Start-Sleep -Seconds 30
           }
 
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "       RDP SESSION TIME EXPIRED"
-          Write-Host "========================================"
+          Write-Host "RDP session time expired."
 
-      # ========================================
-      # CLEANUP
-      # ========================================
       - name: Cleanup
         if: always()
         shell: powershell
         run: |
-          Write-Host ""
           Write-Host "Cleaning up..."
 
-          # Remove WireGuard tunnel
-          $wg = "$env:ProgramFiles\WireGuard\wireguard.exe"
+          $config = "$env:TEMP\egret.conf"
 
-          if (Test-Path $wg) {
-              & $wg `
-                /uninstalltunnelservice `
-                "egret" `
-                2>&1
+          if (Test-Path $config) {
+              Remove-Item `
+                $config `
+                -Force `
+                -ErrorAction SilentlyContinue
           }
 
-          # Remove config
-          Remove-Item `
-            "$env:TEMP\egret.conf" `
-            -Force `
-            -ErrorAction SilentlyContinue
+          $wireguard = "$env:ProgramFiles\WireGuard\wireguard.exe"
 
-          # Remove firewall rule
+          if (Test-Path $wireguard) {
+
+              Get-Service |
+                Where-Object {
+                  $_.Name -like "WireGuardTunnel*"
+                } |
+                ForEach-Object {
+
+                  Stop-Service `
+                    -Name $_.Name `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+                }
+          }
+
           netsh advfirewall firewall delete rule `
-            name="RDP-EGE-3389" `
+            name="RDP-EGE" `
             2>$null
 
-          # Disable RDP user
           Disable-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
