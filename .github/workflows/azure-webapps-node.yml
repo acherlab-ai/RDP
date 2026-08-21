@@ -1,0 +1,58 @@
+name: Test Port 8080
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Start HTTP server
+        shell: powershell
+        run: |
+          $listener = New-Object System.Net.HttpListener
+          $listener.Prefixes.Add("http://+:8080/")
+          $listener.Start()
+
+          Write-Host "Server started on port 8080"
+
+          $job = Start-Job -ScriptBlock {
+              param($prefix)
+
+              $listener = New-Object System.Net.HttpListener
+              $listener.Prefixes.Add($prefix)
+              $listener.Start()
+
+              while ($true) {
+                  $context = $listener.GetContext()
+                  $response = $context.Response
+
+                  $body = [System.Text.Encoding]::UTF8.GetBytes(
+                      "GitHub Actions port 8080 is working"
+                  )
+
+                  $response.ContentLength64 = $body.Length
+                  $response.OutputStream.Write($body, 0, $body.Length)
+                  $response.Close()
+              }
+          } -ArgumentList "http://+:8080/"
+
+          Start-Sleep -Seconds 3
+
+          Write-Host ""
+          Write-Host "Local test:"
+          Test-NetConnection 127.0.0.1 -Port 8080
+
+          Write-Host ""
+          Write-Host "Public IP:"
+          (Invoke-RestMethod "https://api.ipify.org")
+
+          Write-Host ""
+          Write-Host "Listening ports:"
+          Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "Runner will stay alive for 10 minutes..."
+
+          Start-Sleep -Seconds 600
