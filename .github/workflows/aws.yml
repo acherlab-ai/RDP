@@ -1,10 +1,10 @@
-name: 🚀 ACHERLAB RDP PREMIUM
+name: ACHERLAB RDP PREMIUM
 
 on:
   workflow_dispatch:
     inputs:
       duration:
-        description: "🕐 Thời gian sử dụng"
+        description: "Thoi gian su dung"
         required: false
         default: "5h40m"
         type: choice
@@ -21,56 +21,68 @@ jobs:
     steps:
 
       # ============================================================
-      # BANNER
+      # START
       # ============================================================
-      - name: 🎯 KHỞI ĐỘNG ACHERLAB
+      - name: START ACHERLAB
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║          🚀 ACHERLAB RDP PREMIUM            ║" -ForegroundColor Cyan
-          Write-Host "║              Powered by Acherlab             ║" -ForegroundColor Green
-          Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "=============================================="
+          Write-Host "          ACHERLAB RDP PREMIUM"
+          Write-Host "=============================================="
+          Write-Host "Time: ${{ github.event.inputs.duration }}"
           Write-Host ""
-          Write-Host "🕐 Thời gian: ${{ github.event.inputs.duration }}" -ForegroundColor Magenta
 
       # ============================================================
-      # TÍNH THỜI GIAN
+      # CALCULATE TIME
       # ============================================================
-      - name: ⏱️ TÍNH THỜI GIAN PHIÊN
+      - name: CALCULATE SESSION TIME
         shell: powershell
         run: |
-          switch ("${{ github.event.inputs.duration }}") {
+          $duration = "${{ github.event.inputs.duration }}"
+
+          switch ($duration) {
               "1h" {
                   $minutes = 60
-                  $display = "1 giờ"
+                  $display = "1 hour"
               }
+
               "3h" {
                   $minutes = 180
-                  $display = "3 giờ"
+                  $display = "3 hours"
               }
+
               "5h40m" {
                   $minutes = 340
-                  $display = "5 giờ 40 phút"
+                  $display = "5 hours 40 minutes"
               }
+
               default {
                   $minutes = 340
-                  $display = "5 giờ 40 phút"
+                  $display = "5 hours 40 minutes"
               }
           }
 
-          echo "TOTAL_MINUTES=$minutes" >> $env:GITHUB_ENV
-          echo "DISPLAY_TIME=$display" >> $env:GITHUB_ENV
+          "TOTAL_MINUTES=$minutes" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
 
-          Write-Host "✅ Thời lượng: $display" -ForegroundColor Green
+          "DISPLAY_TIME=$display" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          Write-Host "Session: $display"
 
       # ============================================================
-      # CẤU HÌNH RDP
+      # ENABLE RDP
       # ============================================================
-      - name: 🔧 CẤU HÌNH RDP
+      - name: ENABLE RDP
         shell: powershell
         run: |
-          Write-Host "🔧 Đang bật Remote Desktop..." -ForegroundColor Yellow
+
+          Write-Host "Enabling Remote Desktop..."
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -86,36 +98,25 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          # Cho phép RDP qua Windows Firewall
           netsh advfirewall firewall set rule `
             group="remote desktop" `
             new enable=Yes
 
-          # Kiểm tra port
-          Start-Sleep -Seconds 3
-
-          $listener = Get-NetTCPConnection `
-            -LocalPort 3389 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if ($listener) {
-              Write-Host "✅ RDP đang LISTEN trên TCP 3389" -ForegroundColor Green
-          }
-          else {
-              Write-Host "⚠️ Chưa thấy listener TCP 3389" -ForegroundColor Yellow
-          }
+          Write-Host "RDP configuration completed."
 
       # ============================================================
-      # TẠO / CẤU HÌNH USER ADMIN
+      # CREATE ADMIN USER
       # ============================================================
-      - name: 👤 CẤU HÌNH TÀI KHOẢN ADMIN
+      - name: CONFIGURE ADMIN USER
         shell: powershell
         env:
           RDP_PASSWORD: "Hn0961718254@"
         run: |
+
           $username = "admin"
           $password = $env:RDP_PASSWORD
+
+          Write-Host "Configuring user: admin"
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -128,19 +129,20 @@ jobs:
 
           if ($user) {
 
-              Write-Host "ℹ️ User admin đã tồn tại" -ForegroundColor Cyan
+              Write-Host "User already exists."
 
               Set-LocalUser `
                 -Name $username `
                 -Password $securePassword
 
               Enable-LocalUser `
-                -Name $username
+                -Name $username `
+                -ErrorAction SilentlyContinue
 
           }
           else {
 
-              Write-Host "👤 Đang tạo user admin..." -ForegroundColor Yellow
+              Write-Host "Creating user..."
 
               New-LocalUser `
                 -Name $username `
@@ -148,70 +150,55 @@ jobs:
                 -AccountNeverExpires `
                 -PasswordNeverExpires `
                 -Description "Acherlab RDP Administrator"
-
           }
 
-          # Đảm bảo quyền Administrator
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          # Cho phép Remote Desktop
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          Write-Host "✅ Username: admin" -ForegroundColor Green
-          Write-Host "✅ Password đã được cấu hình" -ForegroundColor Green
+          Write-Host "User configuration completed."
 
       # ============================================================
-      # KIỂM TRA RDP
+      # CHECK RDP
       # ============================================================
-      - name: 🔍 KIỂM TRA HỆ THỐNG RDP
+      - name: CHECK RDP
         shell: powershell
         run: |
+
           Write-Host ""
-          Write-Host "🔍 KIỂM TRA RDP..." -ForegroundColor Yellow
+          Write-Host "Checking RDP..."
 
           $user = Get-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
 
-          if ($user) {
-              Write-Host "✅ User admin tồn tại" -ForegroundColor Green
-          }
-          else {
-              Write-Host "❌ User admin không tồn tại" -ForegroundColor Red
+          if (-not $user) {
+              Write-Host "ERROR: admin user not found."
               exit 1
           }
 
-          $admin = Get-LocalGroupMember `
-            -Group "Administrators" `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.Name -match "\\admin$"
-            }
-
-          if ($admin) {
-              Write-Host "✅ admin có quyền Administrator" -ForegroundColor Green
-          }
-          else {
-              Write-Host "⚠️ Không xác nhận được quyền Administrator" -ForegroundColor Yellow
-          }
+          Write-Host "OK: admin user exists."
 
           $service = Get-Service `
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          if ($service.Status -eq "Running") {
-              Write-Host "✅ TermService đang chạy" -ForegroundColor Green
+          if ($service.Status -ne "Running") {
+
+              Write-Host "Starting TermService..."
+
+              Start-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
           }
-          else {
-              Write-Host "❌ TermService chưa chạy" -ForegroundColor Red
-              Start-Service TermService -ErrorAction SilentlyContinue
-          }
+
+          Start-Sleep -Seconds 3
 
           $listener = Get-NetTCPConnection `
             -LocalPort 3389 `
@@ -219,152 +206,148 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($listener) {
-              Write-Host "✅ TCP 3389 đang LISTEN" -ForegroundColor Green
+              Write-Host "OK: TCP 3389 is listening."
           }
           else {
-              Write-Host "❌ TCP 3389 không LISTEN" -ForegroundColor Red
+              Write-Host "WARNING: TCP 3389 is not listening."
           }
 
       # ============================================================
       # PROXYLINK
-      #
-      # Tạo GitHub Secret:
-      #
-      # PROXYLINK_DEPLOY_URL
-      #
-      # Giá trị:
-      # https://app.proxylink.dev/deploy/XXXXXXXX
-      #
-      # KHÔNG đưa token trực tiếp vào workflow.
       # ============================================================
-      - name: 🌐 KẾT NỐI PROXYLINK
+      - name: CONNECT PROXYLINK
         shell: powershell
         env:
           PROXYLINK_DEPLOY_URL: ${{ secrets.PROXYLINK_DEPLOY_URL }}
         run: |
 
+          Write-Host ""
+          Write-Host "Connecting to ProxyLink..."
+
           if ([string]::IsNullOrWhiteSpace($env:PROXYLINK_DEPLOY_URL)) {
-              Write-Host "❌ Chưa cấu hình PROXYLINK_DEPLOY_URL" -ForegroundColor Red
+
+              Write-Host "ERROR: PROXYLINK_DEPLOY_URL is not configured."
               Write-Host ""
-              Write-Host "Vào:" -ForegroundColor Yellow
-              Write-Host "Repository → Settings → Secrets and variables → Actions"
-              Write-Host ""
-              Write-Host "Tạo Secret:"
+              Write-Host "Create this GitHub Actions secret:"
               Write-Host "PROXYLINK_DEPLOY_URL"
+              Write-Host ""
+
               exit 1
           }
 
-          Write-Host "🌐 Đang kết nối ProxyLink..." -ForegroundColor Yellow
-
-          [Net.ServicePointManager]::SecurityProtocol =
+          [Net.ServicePointManager]::SecurityProtocol = `
             [Net.SecurityProtocolType]::Tls12
 
           try {
 
-              # Lấy deployment script từ ProxyLink
-              $script = Invoke-RestMethod `
-                -Uri $env:PROXYLINK_DEPLOY_URL
+              Write-Host "Downloading ProxyLink deployment script..."
 
-              if ([string]::IsNullOrWhiteSpace($script)) {
-                  throw "ProxyLink trả về script rỗng"
+              $scriptContent = Invoke-RestMethod `
+                -Uri $env:PROXYLINK_DEPLOY_URL `
+                -Method Get
+
+              if ([string]::IsNullOrWhiteSpace($scriptContent)) {
+                  throw "ProxyLink returned an empty response."
               }
 
-              Write-Host "✅ Đã nhận deployment script" -ForegroundColor Green
+              Write-Host "ProxyLink deployment script received."
 
-              # Chạy deployment script
-              Invoke-Expression $script
+              Invoke-Expression $scriptContent
 
-              Write-Host "✅ ProxyLink deployment hoàn tất" -ForegroundColor Green
+              Write-Host "ProxyLink deployment command completed."
 
           }
           catch {
 
-              Write-Host "❌ ProxyLink deployment thất bại" -ForegroundColor Red
-              Write-Host $_.Exception.Message -ForegroundColor Red
+              Write-Host "ERROR: ProxyLink connection failed."
+              Write-Host $_.Exception.Message
+
               exit 1
           }
 
           Write-Host ""
-          Write-Host "⏳ Chờ ProxyLink đăng ký máy..." -ForegroundColor Yellow
+          Write-Host "Waiting for ProxyLink registration..."
 
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 20
 
       # ============================================================
-      # THÔNG TIN KẾT NỐI
+      # CONNECTION INFO
       # ============================================================
-      - name: 🎉 HIỂN THỊ THÔNG TIN
+      - name: SHOW CONNECTION INFO
         shell: powershell
         env:
+          RDP_USER: "admin"
           RDP_PASSWORD: "Hn0961718254@"
         run: |
 
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║             🎉 ACHERLAB RDP READY               ║" -ForegroundColor Cyan
-          Write-Host "╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║                                                  ║" -ForegroundColor Cyan
-          Write-Host "║ 👤 USER     : admin                              ║" -ForegroundColor White
-          Write-Host "║ 🔐 PASSWORD : $env:RDP_PASSWORD                  ║" -ForegroundColor White
-          Write-Host "║ 🔌 PORT     : 3389                               ║" -ForegroundColor White
-          Write-Host "║ 🌐 TUNNEL   : ProxyLink                          ║" -ForegroundColor White
-          Write-Host "║                                                  ║" -ForegroundColor Cyan
-          Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
-
+          Write-Host "=============================================="
+          Write-Host "           RDP SERVER READY"
+          Write-Host "=============================================="
           Write-Host ""
-          Write-Host "⚠️ Địa chỉ truy cập ProxyLink được quản lý trong dashboard ProxyLink." -ForegroundColor Yellow
+          Write-Host "Provider : Acherlab"
+          Write-Host "Tunnel   : ProxyLink"
+          Write-Host "User     : $env:RDP_USER"
+          Write-Host "Password : $env:RDP_PASSWORD"
+          Write-Host "Port     : 3389"
+          Write-Host ""
+          Write-Host "Open the ProxyLink dashboard to get"
+          Write-Host "the assigned remote connection address."
           Write-Host ""
 
           $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById(
-            "SE Asia Standard Time"
+              "SE Asia Standard Time"
           )
 
           $start = [System.TimeZoneInfo]::ConvertTimeFromUtc(
-            (Get-Date).ToUniversalTime(),
-            $tz
+              (Get-Date).ToUniversalTime(),
+              $tz
           )
 
           $end = $start.AddMinutes(
-            [int]$env:TOTAL_MINUTES
+              [int]$env:TOTAL_MINUTES
           )
 
-          Write-Host "🕐 Bắt đầu : $($start.ToString("HH:mm:ss"))" -ForegroundColor Green
-          Write-Host "🕐 Kết thúc : $($end.ToString("HH:mm:ss"))" -ForegroundColor Green
-          Write-Host "⏱️ Thời gian: $env:DISPLAY_TIME" -ForegroundColor Magenta
+          Write-Host "Start : $($start.ToString("HH:mm:ss"))"
+          Write-Host "End   : $($end.ToString("HH:mm:ss"))"
+          Write-Host "Time  : $env:DISPLAY_TIME"
+          Write-Host ""
 
       # ============================================================
-      # DUY TRÌ PHIÊN
+      # KEEP SESSION ALIVE
       # ============================================================
-      - name: ⏳ DUY TRÌ PHIÊN
+      - name: KEEP SESSION ALIVE
         shell: powershell
         run: |
 
           $totalMinutes = [int]$env:TOTAL_MINUTES
-          $start = Get-Date
-          $end = $start.AddMinutes($totalMinutes)
+
+          $startTime = Get-Date
+          $endTime = $startTime.AddMinutes($totalMinutes)
 
           Write-Host ""
-          Write-Host "🚀 ACHERLAB RDP đang hoạt động..." -ForegroundColor Green
-          Write-Host "🔌 TCP 3389" -ForegroundColor Cyan
-          Write-Host "🌐 ProxyLink tunnel" -ForegroundColor Cyan
+          Write-Host "Acherlab RDP session is running."
+          Write-Host "Session time: $env:DISPLAY_TIME"
           Write-Host ""
 
-          while ((Get-Date) -lt $end) {
+          while ((Get-Date) -lt $endTime) {
 
-              $remaining = $end - (Get-Date)
+              $now = Get-Date
+              $remaining = $endTime - $now
 
               $hours = [math]::Max(
-                0,
-                [math]::Floor($remaining.TotalHours)
+                  0,
+                  [math]::Floor($remaining.TotalHours)
               )
 
               $minutes = [math]::Max(
-                0,
-                [math]::Floor($remaining.TotalMinutes % 60)
+                  0,
+                  [math]::Floor($remaining.TotalMinutes % 60)
               )
 
               $seconds = [math]::Max(
-                0,
-                [math]::Floor($remaining.TotalSeconds % 60)
+                  0,
+                  [math]::Floor($remaining.TotalSeconds % 60)
               )
 
               $service = Get-Service `
@@ -372,49 +355,56 @@ jobs:
                 -ErrorAction SilentlyContinue
 
               if ($service.Status -ne "Running") {
-                  Write-Host "⚠️ TermService stopped → restarting..." -ForegroundColor Yellow
+
+                  Write-Host ""
+                  Write-Host "TermService stopped. Restarting..."
+
                   Start-Service `
                     -Name "TermService" `
                     -ErrorAction SilentlyContinue
               }
 
-              $connection = Get-NetTCPConnection `
+              $listener = Get-NetTCPConnection `
                 -LocalPort 3389 `
-                -State Established `
+                -State Listen `
                 -ErrorAction SilentlyContinue
 
+              if ($listener) {
+                  $rdpStatus = "LISTENING"
+              }
+              else {
+                  $rdpStatus = "NOT_LISTENING"
+              }
+
               Write-Host `
-                "`r[$(Get-Date -Format HH:mm:ss)] RDP=$($service.Status) | Connections=$($connection.Count) | Còn $hours giờ $minutes phút $seconds giây" `
-                -NoNewline `
-                -ForegroundColor Cyan
+                "`r[$(Get-Date -Format HH:mm:ss)] RDP=$rdpStatus | Remaining=$hours`h $minutes`m $seconds`s" `
+                -NoNewline
 
               Start-Sleep -Seconds 10
           }
 
           Write-Host ""
           Write-Host ""
-          Write-Host "⏰ ĐÃ HẾT THỜI GIAN PHIÊN." -ForegroundColor Red
+          Write-Host "Session time expired."
 
       # ============================================================
       # CLEANUP
       # ============================================================
-      - name: 🧹 DỌN DẸP
+      - name: CLEANUP
         if: always()
         shell: powershell
         run: |
 
           Write-Host ""
-          Write-Host "🧹 Đang dọn dẹp..." -ForegroundColor Yellow
+          Write-Host "Cleaning up..."
 
-          # Dừng RDP service
           Stop-Service `
             -Name "TermService" `
             -Force `
             -ErrorAction SilentlyContinue
 
-          # Disable user
           Disable-LocalUser `
             -Name "admin" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "✅ RDP session đã được dọn dẹp." -ForegroundColor Green
+          Write-Host "Cleanup completed."
